@@ -1,17 +1,14 @@
-<div align="center">
-  <img src="docs/characters/dashu.jpg" width="220" alt="Dashu">
-  <h1 style="border-bottom: none; margin-bottom: 0;">todo-bar</h1>
-  <h3 style="margin-top: 0; font-weight: normal;">
-    open markdown todos in the mac menu bar
-  </h3>
-  <p><em>open items only</em> · starring <strong>Dashu</strong></p>
-</div>
+<p align="center">
+  <img src="docs/screenshots/panel-project.png" alt="todo-bar panel showing open markdown todos" width="460" />
+</p>
 
-<br />
+<h1 align="center">todo-bar</h1>
 
-Mac menu-bar app for open items (`- …`) across one or more todo markdown files.
+<h3 align="center">mac menu bar app for open items in plain markdown todos</h3>
 
-The mascot is **Dashu** — the sticky-note checklist spirit who checks dashes off your list.
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="todo-bar switching between project and books tabs" width="400" />
+</p>
 
 ## What it does
 
@@ -23,6 +20,10 @@ The mascot is **Dashu** — the sticky-note checklist spirit who checks dashes o
 - **Reorder** — drag within a section; rewrites + commits
 - Live-reloads when the active file changes
 - Tabs persist in UserDefaults
+
+<p align="center">
+  <img src="docs/screenshots/panel-books.png" alt="todo-bar books tab with sample reading list" width="400" />
+</p>
 
 ## Build & run
 
@@ -36,3 +37,11 @@ open "build/todo-bar.app"
 - `- item` = open (shown)
 - no leading dash = done / not listed
 - `## Section` = group header
+
+## Sample data
+
+Screenshots use fake lists in `docs/demo/` (not anyone's real todos). Regenerate:
+
+```bash
+bash scripts/render-screenshots.sh
+```

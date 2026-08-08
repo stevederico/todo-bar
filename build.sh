@@ -5,6 +5,7 @@ set -euo pipefail
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
 APP_NAME="todo-bar"
 EXEC_NAME="TodoBar"
 BUILD_DIR="$ROOT/build"
@@ -12,6 +13,11 @@ APP_DIR="$BUILD_DIR/${APP_NAME}.app"
 MACOS_DIR="$APP_DIR/Contents/MacOS"
 RES_DIR="$APP_DIR/Contents/Resources"
 SRC_DIR="$ROOT/Sources/TodoBar"
+
+# Rebuild icons from docs/characters/dashu.jpg when present
+if [[ -f docs/characters/dashu.jpg ]]; then
+  bash scripts/build-icons.sh
+fi
 
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 rm -rf "$BUILD_DIR/To Do Dash Bar.app" 2>/dev/null || true
@@ -34,6 +40,13 @@ swiftc \
 
 cp "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
+
+# App + menu bar icons
+for f in AppIcon.icns StatusBarIcon.png diana.k@example.org StatusBarIcon-full.png StatusBarIcon-full@2x.png; do
+  if [[ -f "Resources/$f" ]]; then
+    cp "Resources/$f" "$RES_DIR/$f"
+  fi
+done
 
 codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
 

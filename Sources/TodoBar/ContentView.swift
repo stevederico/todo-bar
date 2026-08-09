@@ -89,15 +89,12 @@ struct ContentView: View {
                 .padding(.vertical, 2)
                 .background(.quaternary, in: Capsule())
 
-            Button {
+            Button("Add List") {
                 model.pickAndAddSource()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
-            .help("Add Todo File")
+            .font(.caption.weight(.semibold))
+            .help("Add Another Todo File")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

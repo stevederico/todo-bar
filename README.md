@@ -16,7 +16,7 @@
 - **+** adds another `.md` (e.g. `books.md`, `deals.md`, `marketing/todo.md`)
 - Right-click tab → Rename / Reveal / Remove
 - Shows open items (`- task`) grouped by `##` section
-- **Add** — footer field; appends to last section; commits
+- **+** — reveals New To-Do field under the tabs; appends to last section; commits
 - **Click** — expand truncated text; **double-click** (or right-click → Edit) to rewrite; commits
 - **Complete** — removes the line; if `CHANGELOG.md` exists beside the file or at git root, logs under today (`MM/DD/YY`, 2-space indent); `git commit`s
 - **Reorder** — drag within a section; rewrites + commits

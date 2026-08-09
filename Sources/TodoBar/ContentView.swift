@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var renameID: UUID?
     @State private var renameText = ""
     @State private var newTodoText = ""
+    @State private var showAddField = false
     @FocusState private var newTodoFocused: Bool
 
     private var store: TodoStore { model.store }
@@ -31,6 +32,12 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
+            if showAddField {
+                addField
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             Divider()
             if let err = store.lastError {
                 Text(err)
@@ -72,7 +79,7 @@ struct ContentView: View {
         }
     }
 
-    /// Title, count, tabs, and + — single row.
+    /// Tabs, count, + (new to-do), Add List — single row.
     private var topBar: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -89,15 +96,84 @@ struct ContentView: View {
                 .padding(.vertical, 2)
                 .background(.quaternary, in: Capsule())
 
-            Button("Add List") {
-                model.pickAndAddSource()
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    showAddField.toggle()
+                }
+                if showAddField {
+                    DispatchQueue.main.async { newTodoFocused = true }
+                } else {
+                    newTodoText = ""
+                    newTodoFocused = false
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        showAddField ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                showAddField ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.15),
+                                lineWidth: 1
+                            )
+                    )
             }
-            .buttonStyle(.borderless)
-            .font(.caption.weight(.semibold))
+            .buttonStyle(.plain)
+            .help(showAddField ? "Hide New To-Do" : "Add To-Do")
+
+            Button {
+                model.pickAndAddSource()
+            } label: {
+                Text("Add List")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
             .help("Add Another Todo File")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var addField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "plus.circle")
+                .foregroundStyle(.secondary)
+            TextField("New To-Do", text: $newTodoText)
+                .textFieldStyle(.plain)
+                .focused($newTodoFocused)
+                .onSubmit { submitNewTodo() }
+            if !newTodoText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("Add") { submitNewTodo() }
+                    .buttonStyle(.borderless)
+                    .font(.caption.weight(.semibold))
+            }
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    showAddField = false
+                    newTodoText = ""
+                    newTodoFocused = false
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel")
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func tabChip(_ source: TodoSource) -> some View {
@@ -174,22 +250,6 @@ struct ContentView: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle")
-                    .foregroundStyle(.secondary)
-                TextField("New To-Do", text: $newTodoText)
-                    .textFieldStyle(.plain)
-                    .focused($newTodoFocused)
-                    .onSubmit { submitNewTodo() }
-                if !newTodoText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button("Add") { submitNewTodo() }
-                        .buttonStyle(.borderless)
-                        .font(.caption.weight(.semibold))
-                }
-            }
-            .padding(8)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -226,6 +286,7 @@ struct ContentView: View {
 
     private func submitNewTodo() {
         let text = newTodoText
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         newTodoText = ""
         store.addItem(text: text)
         newTodoFocused = true

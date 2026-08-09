@@ -3,6 +3,8 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var model: TodoBarModel
+    /// Must observe store directly — nested `model.store` alone does not refresh SwiftUI.
+    @ObservedObject var store: TodoStore
     @State private var query = ""
     @State private var renameID: UUID?
     @State private var renameText = ""
@@ -10,8 +12,6 @@ struct ContentView: View {
     @State private var showAddField = false
     @State private var showCompleted = false
     @FocusState private var newTodoFocused: Bool
-
-    private var store: TodoStore { model.store }
 
     private var isFiltering: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -361,15 +361,14 @@ private struct TodoRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            Button(action: onComplete) {
-                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(item.isCompleted ? "Reopen" : "Mark Complete")
+            // Large hit target; plain button + high-priority tap (MenuBarExtra is flaky).
+            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
+                .frame(width: 36, height: 32)
+                .contentShape(Rectangle())
+                .onTapGesture { onComplete() }
+                .help(item.isCompleted ? "Reopen" : "Mark Complete")
 
             if editing {
                 TextField("To-Do", text: $draft)
@@ -397,25 +396,21 @@ private struct TodoRow: View {
 
             if !item.isCompleted {
                 HStack(spacing: 2) {
-                    Button(action: onMoveUp) {
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 20, height: 20)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canMoveUp)
-                    .opacity(canMoveUp ? 0.55 : 0.15)
-                    .help("Move Up")
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                        .opacity(canMoveUp ? 0.6 : 0.15)
+                        .onTapGesture { if canMoveUp { onMoveUp() } }
+                        .help("Move Up")
 
-                    Button(action: onMoveDown) {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 20, height: 20)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canMoveDown)
-                    .opacity(canMoveDown ? 0.55 : 0.15)
-                    .help("Move Down")
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                        .opacity(canMoveDown ? 0.6 : 0.15)
+                        .onTapGesture { if canMoveDown { onMoveDown() } }
+                        .help("Move Down")
                 }
             }
         }

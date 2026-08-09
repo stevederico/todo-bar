@@ -65,33 +65,32 @@ struct SmokeMain {
     }
 
     static func testAddGoesToTopSectionNotBottom() {
-        print("== add → first section (not last) ==")
+        print("== add → top of list ==")
+        // Shape like real ~/todos.md: H1, loose todos, then ## sections
         var doc = TodoDocument(text: """
-        ## Inbox
-        - a
-        - [x] old done
+        # To-Do 28
+
+        - first loose
+        - second loose
+        ## THOUGHTS
+        - thought
         ## Archive
         - buried
         - [x] archive done
         """)
-        check("default section is Inbox", doc.defaultAddSection() == "Inbox")
+        check("default is To-Dos (pre-header)", doc.defaultAddSection() == "To-Dos")
         try! doc.addItem(text: "NEW ITEM")
-        let text = doc.text
-        // NEW must appear under Inbox, before completed, not under Archive
-        let inboxIdx = text.range(of: "## Inbox")!.lowerBound
-        let newIdx = text.range(of: "- NEW ITEM")!.lowerBound
-        let archiveIdx = text.range(of: "## Archive")!.lowerBound
-        let doneIdx = text.range(of: "- [x] old done")!.lowerBound
-        check("new after Inbox header", newIdx > inboxIdx)
-        check("new before Archive", newIdx < archiveIdx)
-        check("new before completed in section", newIdx < doneIdx)
-        check("not next to archive done", !text.contains("- NEW ITEM\n- [x] archive"))
-        let open = doc.parse().first { $0.title == "Inbox" }?.items.filter { !$0.isCompleted }.map(\.text)
-        check("Inbox open ends with NEW", open?.last == "NEW ITEM", open?.description ?? "")
+        let openTop = doc.parse().first { $0.title == "To-Dos" }?.items.filter { !$0.isCompleted }.map(\.text) ?? []
+        check("NEW is first open in To-Dos", openTop.first == "NEW ITEM", openTop.description)
+        check("NEW before first loose on disk", {
+            let lines = doc.lines.filter { TodoDocument.isTodoLine($0) }
+            return TodoDocument.todoText(lines[0]) == "NEW ITEM"
+        }())
+        check("not under Archive", !doc.text.contains("## Archive\n- NEW ITEM"))
     }
 
     static func testAddBeforeCompleted() {
-        print("== add before completed block ==")
+        print("== add at top of section open block ==")
         var doc = TodoDocument(text: """
         ## S
         - open
@@ -100,11 +99,8 @@ struct SmokeMain {
         """)
         try! doc.addItem(text: "fresh", section: "S")
         let lines = doc.lines.filter { TodoDocument.isTodoLine($0) }
-        check("order open, fresh, done…", lines.map { TodoDocument.todoText($0) } == ["open", "fresh", "done1", "done2"]
-            || lines.map { TodoDocument.todoText($0) } == ["open", "fresh", "done1", "done2"])
-        // Explicit:
-        check("line0 open", !TodoDocument.isCompletedTodoLine(lines[0]) && TodoDocument.todoText(lines[0]) == "open")
-        check("line1 fresh", !TodoDocument.isCompletedTodoLine(lines[1]) && TodoDocument.todoText(lines[1]) == "fresh")
+        check("line0 fresh (prepend)", !TodoDocument.isCompletedTodoLine(lines[0]) && TodoDocument.todoText(lines[0]) == "fresh")
+        check("line1 open", TodoDocument.todoText(lines[1]) == "open")
         check("line2 done", TodoDocument.isCompletedTodoLine(lines[2]))
     }
 
@@ -214,7 +210,7 @@ struct SmokeMain {
         var d = doc
         try! d.addItem(text: "x", section: "Mid")
         let midTodos = sectionTodoLines(d, "Mid").map(TodoDocument.todoText)
-        check("Mid open then done", midTodos == ["m1", "x", "md"] || midTodos.first == "m1" && midTodos.contains("x") && midTodos.last == "md", midTodos.description)
+        check("Mid prepend open then done", midTodos == ["x", "m1", "md"], midTodos.description)
     }
 
     static func sectionTodoLines(_ doc: TodoDocument, _ section: String) -> [String] {
@@ -282,8 +278,11 @@ struct SmokeMain {
         let laterRange = disk.range(of: "## Later")!
         let oldDone = disk.range(of: "- [x] old")!
         check("added under Inbox not Later", newRange.upperBound < laterRange.lowerBound)
-        check("added before Later section", true)
-        check("not after [x] old", newRange.upperBound < oldDone.lowerBound || newRange.lowerBound < oldDone.lowerBound)
+        // Prepend: NEW is first todo under Inbox
+        let inboxBody = disk.components(separatedBy: "## Later")[0]
+        let firstTodo = inboxBody.split(separator: "\n").map(String.init).first { TodoDocument.isTodoLine($0) }
+        check("BRAND NEW is first todo in Inbox", firstTodo.map(TodoDocument.todoText) == "BRAND NEW", firstTodo ?? "nil")
+        check("not after [x] old", newRange.lowerBound < oldDone.lowerBound)
 
         // Complete first open in Inbox
         let target = await MainActor.run {

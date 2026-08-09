@@ -88,8 +88,10 @@ final class TodoStore: ObservableObject {
 
     private func publish() {
         let parsed = doc.parse()
+        // Always assign new arrays so @Published / observers fire even if counts match.
         sections = parsed
         itemCount = parsed.reduce(0) { $0 + $1.items.filter { !$0.isCompleted }.count }
+        objectWillChange.send()
     }
 
     func openInEditor() {

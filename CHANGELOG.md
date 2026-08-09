@@ -1,6 +1,13 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.3.1
+
+  Fix nested store observation
+  Prepend new items to top
+  Default To-Dos pre-header
+  Bigger tap targets
+
 0.3.0
 
   Rewrite pure document core

@@ -8,7 +8,7 @@ struct TodoBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ContentView(model: model)
+            ContentView(model: model, store: model.store)
         } label: {
             Image(systemName: "checklist")
         }
@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard hostedWindow == nil else { return }
         let model = TodoBarModel()
         demoModel = model
-        let hosting = NSHostingView(rootView: ContentView(model: model))
+        let hosting = NSHostingView(rootView: ContentView(model: model, store: model.store))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 580),
             styleMask: [.titled, .closable, .miniaturizable],

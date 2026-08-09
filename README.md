@@ -16,10 +16,10 @@
 - **+** adds another `.md` (e.g. `books.md`, `deals.md`, `marketing/todo.md`)
 - Right-click tab → Rename / Reveal / Remove
 - Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
-- **+** — new to-do goes in the **first** section (top), before any completed lines; commits async
-- **Click** circle — mark complete (`- [x]`) and move to bottom of that section; click again to reopen
+- **+** — new to-do is **prepended at the top** of the first section (pre-header `To-Dos` when present)
+- **Click** circle — mark complete (`- [x]`), hide from open list; **Show Completed** to see / reopen
 - **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
-- **Reorder** — chevrons (or context menu Move Up/Down) on open items
+- **Reorder** — ↑↓ on open items (or context menu)
 - Live-reloads when the active file changes; tabs persist in UserDefaults
 
 <p align="center">

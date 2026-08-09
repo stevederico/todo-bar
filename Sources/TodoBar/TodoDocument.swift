@@ -113,22 +113,30 @@ struct TodoDocument: Equatable {
         parse().reduce(0) { $0 + $1.items.filter(\.isCompleted).count }
     }
 
-    /// Section new items go into: first section in the file (top of list), never the last/bottom.
+    /// Section for new items = **visual top of the list**.
+    /// Pre-header todos (before first `##`) → `"To-Dos"`. Else first `##` section.
     func defaultAddSection() -> String {
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if Self.isSectionHeader(trimmed) {
+                break // hit a real section before any loose todo
+            }
+            if Self.isTodoLine(line) {
+                return "To-Dos"
+            }
+        }
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if Self.isSectionHeader(trimmed) {
                 return Self.sectionTitle(fromHeader: trimmed)
             }
         }
-        // Pre-header todos or empty file
-        if lines.contains(where: Self.isTodoLine) { return "To-Dos" }
-        return parse().first?.title ?? "To-Dos"
+        return "To-Dos"
     }
 
     // MARK: Mutations
 
-    /// Insert an open todo at the end of the **open** block of `section` (before any completed).
+    /// Insert an open todo at the **top** of the open block (first row of that section).
     @discardableResult
     mutating func addItem(text: String, section sectionTitle: String? = nil) throws -> Int {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -138,17 +146,16 @@ struct TodoDocument: Equatable {
         let newLine = Self.formatTodoLine(indent: "", text: trimmed, completed: false)
 
         if hasSection(named: target) || (target == "To-Dos" && lines.contains(where: Self.isTodoLine)) {
-            let at = insertIndex(sectionTitle: target, completed: false)
+            let at = insertIndex(sectionTitle: target, completed: false, prepend: true)
             lines.insert(newLine, at: at)
             return at
         }
 
-        // Create section at top of file (new work stays visible, not buried under archives)
+        // Create section at top of file (after optional H1)
         if lines.isEmpty || (lines.count == 1 && lines[0].isEmpty) {
             lines = ["## \(target)", "", newLine]
             return 2
         }
-        // Prepend section after optional H1 title block
         var insertAt = 0
         if let first = lines.first, first.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
             insertAt = 1
@@ -176,7 +183,7 @@ struct TodoDocument: Equatable {
         let newLine = Self.formatTodoLine(indent: indent, text: text, completed: markCompleted)
 
         lines.remove(at: idx)
-        let at = insertIndex(sectionTitle: section, completed: markCompleted)
+        let at = insertIndex(sectionTitle: section, completed: markCompleted, prepend: false)
         lines.insert(newLine, at: min(at, lines.count))
         return markCompleted
     }
@@ -264,10 +271,19 @@ struct TodoDocument: Equatable {
     // MARK: Internals
 
     private func hasSection(named title: String) -> Bool {
-        if title == "To-Dos", lines.contains(where: Self.isTodoLine) {
-            // May be the implicit pre-header bucket
-            let firstHeader = lines.firstIndex { Self.isSectionHeader($0.trimmingCharacters(in: .whitespaces)) }
-            if firstHeader == nil { return true }
+        if title == "To-Dos" {
+            // Implicit top bucket: todos before first ##, or file with no ## at all
+            var sawTodoBeforeHeader = false
+            var sawHeader = false
+            for line in lines {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if Self.isSectionHeader(t) {
+                    sawHeader = true
+                    break
+                }
+                if Self.isTodoLine(line) { sawTodoBeforeHeader = true }
+            }
+            if sawTodoBeforeHeader || !sawHeader { return true }
         }
         return lines.contains {
             let t = $0.trimmingCharacters(in: .whitespaces)
@@ -297,27 +313,32 @@ struct TodoDocument: Equatable {
         return lines.firstIndex { Self.isTodoLine($0) && Self.todoText($0) == text }
     }
 
-    /// Insert index for a new/moved todo: open before completed; completed after all todos in section.
-    func insertIndex(sectionTitle: String, completed: Bool) -> Int {
+    /// Insert index for a todo in `sectionTitle`.
+    /// - open + prepend: first open line (top of list)
+    /// - open + append: after last open (before completed)
+    /// - completed: after all todos in section
+    func insertIndex(sectionTitle: String, completed: Bool, prepend: Bool = false) -> Int {
         var current = "To-Dos"
+        var firstOpen: Int?
         var lastOpen: Int?
         var lastTodo: Int?
         var firstCompleted: Int?
         var headerIndex: Int?
-        var sectionEnd: Int? // index of next ## after this section starts
-
-        let trackingImplicit = (sectionTitle == "To-Dos")
+        var sectionEnd: Int?
+        var sawExplicitHeader = false
 
         for (offset, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if Self.isSectionHeader(trimmed) {
                 let title = Self.sectionTitle(fromHeader: trimmed)
-                if current == sectionTitle {
+                if current == sectionTitle, sectionEnd == nil {
                     sectionEnd = offset
                 }
                 current = title
+                sawExplicitHeader = true
                 if current == sectionTitle {
                     headerIndex = offset
+                    firstOpen = nil
                     lastOpen = nil
                     lastTodo = nil
                     firstCompleted = nil
@@ -327,11 +348,10 @@ struct TodoDocument: Equatable {
             }
 
             let inSection: Bool
-            if current == sectionTitle {
+            if sectionTitle == "To-Dos", !sawExplicitHeader {
+                // Implicit top bucket: every line before the first ##
                 inSection = true
-            } else if trackingImplicit, headerIndex == nil, sectionEnd == nil,
-                      current == "To-Dos", sectionTitle == "To-Dos" {
-                // still before first ##
+            } else if current == sectionTitle {
                 inSection = true
             } else {
                 inSection = false
@@ -342,6 +362,7 @@ struct TodoDocument: Equatable {
             if Self.isCompletedTodoLine(line) {
                 if firstCompleted == nil { firstCompleted = offset }
             } else {
+                if firstOpen == nil { firstOpen = offset }
                 lastOpen = offset
             }
         }
@@ -353,7 +374,28 @@ struct TodoDocument: Equatable {
             return lines.count
         }
 
-        // Open: after last open item, else before first completed, else after header / before next section
+        // Open
+        if prepend {
+            if let first = firstOpen { return first }
+            if let firstDone = firstCompleted { return firstDone }
+            if let header = headerIndex { return header + 1 }
+            // Implicit To-Dos: after H1/blanks, before first ##
+            if sectionTitle == "To-Dos" {
+                var i = 0
+                while i < lines.count {
+                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    if Self.isSectionHeader(t) { return i }
+                    if t.hasPrefix("#") || t.isEmpty {
+                        i += 1
+                        continue
+                    }
+                    return i
+                }
+            }
+            if let end = sectionEnd { return end }
+            return 0
+        }
+
         if let last = lastOpen { return last + 1 }
         if let firstDone = firstCompleted { return firstDone }
         if let header = headerIndex { return header + 1 }

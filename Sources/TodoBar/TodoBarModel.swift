@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import AppKit
 import UniformTypeIdentifiers
+// Combine used to forward store.objectWillChange → model
 
 /// Owns the tab list + the active file store.
 @MainActor
@@ -16,6 +17,7 @@ final class TodoBarModel: ObservableObject {
     }
 
     let store: TodoStore
+    private var cancellables = Set<AnyCancellable>()
 
     var selectedSource: TodoSource? {
         sources.first { $0.id == selectedID }
@@ -27,7 +29,15 @@ final class TodoBarModel: ObservableObject {
         self.selectedID = loaded.selectedID
         let path = loaded.sources.first(where: { $0.id == loaded.selectedID })?.url
             ?? TodoStore.defaultTodosURL()
-        self.store = TodoStore(filePath: path)
+        let store = TodoStore(filePath: path)
+        self.store = store
+        // Nested ObservableObject: forward store publishes so views observing `model` redraw.
+        store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     func select(_ id: UUID) {

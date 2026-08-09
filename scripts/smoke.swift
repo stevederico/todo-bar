@@ -106,7 +106,7 @@ struct SmokeMain {
     }
 
     static func testCompleteMovesToBottom() {
-        print("== complete → bottom of section ==")
+        print("== complete → ## Completed at EOF ==")
         var doc = TodoDocument(text: """
         ## S
         - one
@@ -122,19 +122,28 @@ struct SmokeMain {
             lineIndex: item.lineIndex,
             wasCompleted: false
         )
-        let sLines = sectionTodoLines(doc, "S")
-        check("one is completed", sLines.contains { TodoDocument.isCompletedTodoLine($0) && TodoDocument.todoText($0) == "one" })
-        check("completed last in S", TodoDocument.todoText(sLines.last!) == "one" && TodoDocument.isCompletedTodoLine(sLines.last!))
-        check("two still open first", TodoDocument.todoText(sLines[0]) == "two")
+        check("has ## Completed", doc.lines.contains { $0.trimmingCharacters(in: .whitespaces) == "## Completed" })
+        check("one not in S", !sectionTodoLines(doc, "S").contains { TodoDocument.todoText($0) == "one" })
         check("other untouched", doc.text.contains("- other"))
         check("openCount 3", doc.openCount == 3)
+        // Completed section is last, item is last todo line
+        let lastHeader = doc.lines.lastIndex { TodoDocument.isSectionHeader($0.trimmingCharacters(in: .whitespaces)) }!
+        check("Completed is last header", TodoDocument.sectionTitle(fromHeader: doc.lines[lastHeader].trimmingCharacters(in: .whitespaces)) == "Completed")
+        let lastTodo = doc.lines.last { TodoDocument.isTodoLine($0) }!
+        check("one is last todo in file", TodoDocument.todoText(lastTodo) == "one" && TodoDocument.isCompletedTodoLine(lastTodo))
+        // Second complete stacks under Completed
+        let two = doc.parse().flatMap(\.items).first { $0.text == "two" }!
+        _ = try! doc.toggleComplete(text: two.text, section: two.section, lineIndex: two.lineIndex, wasCompleted: false)
+        let completedLines = sectionTodoLines(doc, "Completed").map(TodoDocument.todoText)
+        check("both under Completed", completedLines == ["one", "two"], completedLines.description)
     }
 
     static func testReopenMovesAboveCompleted() {
-        print("== reopen → above completed ==")
+        print("== reopen → top open list ==")
         var doc = TodoDocument(text: """
         ## S
         - live
+        ## Completed
         - [x] doneA
         - [x] doneB
         """)
@@ -145,22 +154,10 @@ struct SmokeMain {
             lineIndex: item.lineIndex,
             wasCompleted: true
         )
-        let sLines = sectionTodoLines(doc, "S")
-        let texts = sLines.map { (TodoDocument.todoText($0), TodoDocument.isCompletedTodoLine($0)) }
-        check("doneA open", texts.contains(where: { $0.0 == "doneA" && $0.1 == false }))
-        check("open before completed", {
-            let firstDone = sLines.firstIndex(where: TodoDocument.isCompletedTodoLine)
-            let doneA = sLines.firstIndex { TodoDocument.todoText($0) == "doneA" }!
-            return firstDone == nil || doneA < firstDone! || !TodoDocument.isCompletedTodoLine(sLines[doneA])
-        }())
-        // All open before all completed
-        var sawDone = false
-        var orderOK = true
-        for line in sLines {
-            if TodoDocument.isCompletedTodoLine(line) { sawDone = true }
-            else if sawDone { orderOK = false }
-        }
-        check("open block then done block", orderOK)
+        check("doneA not completed", doc.parse().flatMap(\.items).contains { $0.text == "doneA" && !$0.isCompleted })
+        let openTop = doc.parse().flatMap(\.items).filter { !$0.isCompleted }.map(\.text)
+        check("doneA at top of open", openTop.first == "doneA", openTop.description)
+        check("doneB still completed", doc.text.contains("- [x] doneB"))
     }
 
     static func testUpdatePreservesState() {

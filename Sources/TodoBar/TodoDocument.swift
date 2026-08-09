@@ -36,6 +36,9 @@ enum TodoDocError: Error, Equatable, LocalizedError {
 
 /// Source of truth for todo markdown mutations. Fully unit-testable.
 struct TodoDocument: Equatable {
+    /// Completed items are moved here — always last section in the file.
+    static let completedSectionTitle = "Completed"
+
     var lines: [String]
 
     init(lines: [String] = []) {
@@ -114,7 +117,7 @@ struct TodoDocument: Equatable {
     }
 
     /// Section for new items = **visual top of the list**.
-    /// Pre-header todos (before first `##`) → `"To-Dos"`. Else first `##` section.
+    /// Pre-header todos (before first `##`) → `"To-Dos"`. Else first non-Completed `##` section.
     func defaultAddSection() -> String {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -128,7 +131,9 @@ struct TodoDocument: Equatable {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if Self.isSectionHeader(trimmed) {
-                return Self.sectionTitle(fromHeader: trimmed)
+                let title = Self.sectionTitle(fromHeader: trimmed)
+                if title == Self.completedSectionTitle { continue }
+                return title
             }
         }
         return "To-Dos"
@@ -168,7 +173,8 @@ struct TodoDocument: Equatable {
         return insertAt + 1
     }
 
-    /// Toggle complete. Returns new `isCompleted`. Moves completed to section bottom; open above completed.
+    /// Toggle complete. Done → `- [x]` under `## Completed` at **end of file**.
+    /// Reopen → open line at top of the default (first) section.
     @discardableResult
     mutating func toggleComplete(text: String, section: String, lineIndex hint: Int, wasCompleted: Bool) throws -> Bool {
         guard let idx = resolveLineIndex(text: text, section: section, hint: hint, isCompleted: wasCompleted) else {
@@ -178,14 +184,74 @@ struct TodoDocument: Equatable {
         guard Self.isTodoLine(line), Self.todoText(line) == text else {
             throw TodoDocError.invalidLine
         }
-        let indent = Self.leadingWhitespace(line)
         let markCompleted = !Self.isCompletedTodoLine(line)
-        let newLine = Self.formatTodoLine(indent: indent, text: text, completed: markCompleted)
 
         lines.remove(at: idx)
-        let at = insertIndex(sectionTitle: section, completed: markCompleted, prepend: false)
-        lines.insert(newLine, at: min(at, lines.count))
+
+        if markCompleted {
+            let doneLine = Self.formatTodoLine(indent: "", text: text, completed: true)
+            ensureCompletedSectionAtEndOfFile()
+            lines.append(doneLine)
+        } else {
+            let openLine = Self.formatTodoLine(indent: "", text: text, completed: false)
+            let target = defaultAddSection()
+            if hasSection(named: target) || (target == "To-Dos" && lines.contains(where: Self.isTodoLine)) {
+                let at = insertIndex(sectionTitle: target, completed: false, prepend: true)
+                lines.insert(openLine, at: min(at, lines.count))
+            } else {
+                // Empty-ish file: put at top as open todo
+                lines.insert(openLine, at: 0)
+            }
+        }
         return markCompleted
+    }
+
+    /// Ensure `## Completed` exists as the **last** section in the file (create or move).
+    mutating func ensureCompletedSectionAtEndOfFile() {
+        let title = Self.completedSectionTitle
+        var headerIdx: Int?
+        for (i, line) in lines.enumerated() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if Self.isSectionHeader(t), Self.sectionTitle(fromHeader: t) == title {
+                headerIdx = i
+                break
+            }
+        }
+
+        if let h = headerIdx {
+            var end = lines.count
+            for i in (h + 1)..<lines.count {
+                if Self.isSectionHeader(lines[i].trimmingCharacters(in: .whitespaces)) {
+                    end = i
+                    break
+                }
+            }
+            // Already the last section — trim trailing blanks after it for clean appends
+            if end == lines.count {
+                while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                    lines.removeLast()
+                }
+                return
+            }
+            // Move Completed block to EOF
+            var block = Array(lines[h..<end])
+            while block.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                block.removeLast()
+            }
+            lines.removeSubrange(h..<end)
+            while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                lines.removeLast()
+            }
+            if !lines.isEmpty { lines.append("") }
+            lines.append(contentsOf: block)
+            return
+        }
+
+        while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeLast()
+        }
+        if !lines.isEmpty { lines.append("") }
+        lines.append("## \(title)")
     }
 
     mutating func updateItem(text oldText: String, section: String, lineIndex hint: Int, isCompleted: Bool, newText: String) throws {

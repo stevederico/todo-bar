@@ -1,6 +1,12 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.2.0
+
+  Keep completed items
+  Move done to bottom
+  Add show completed
+
 0.1.0
 
   Ship menu bar app

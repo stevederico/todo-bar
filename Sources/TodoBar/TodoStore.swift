@@ -9,6 +9,8 @@ struct TodoItem: Identifiable, Hashable {
     /// 0-based index into the raw markdown line array.
     let lineIndex: Int
     let indent: Int
+    /// True when the line is `- [x] …` / `- [X] …`.
+    let isCompleted: Bool
 }
 
 struct TodoSection: Identifiable, Hashable {
@@ -106,7 +108,8 @@ final class TodoStore: ObservableObject {
         lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let parsed = Self.parse(lines: lines)
         sections = parsed
-        itemCount = parsed.reduce(0) { $0 + $1.items.count }
+        // Badge = open only
+        itemCount = parsed.reduce(0) { $0 + $1.items.filter { !$0.isCompleted }.count }
     }
 
     func openInEditor() {
@@ -119,7 +122,8 @@ final class TodoStore: ObservableObject {
 
     // MARK: - Complete
 
-    /// Remove open item, optionally log CHANGELOG, git commit.
+    /// Mark open item done (`- [x]`), move to bottom of its section; optionally log CHANGELOG; git commit.
+    /// If already completed, uncomplete (`- item`) and move above completed block.
     func complete(_ item: TodoItem) {
         guard !isBusy else { return }
         isBusy = true
@@ -140,28 +144,88 @@ final class TodoStore: ObservableObject {
             return
         }
 
+        let indent = Self.leadingWhitespace(line)
+        let wasCompleted = Self.isCompletedTodoLine(line)
+        let markCompleted = !wasCompleted
+        let newLine = Self.formatTodoLine(indent: indent, text: item.text, completed: markCompleted)
+
         lines.remove(at: item.lineIndex)
-        if item.lineIndex < lines.count, lines[item.lineIndex].trimmingCharacters(in: .whitespaces).isEmpty {
-            let prevBlank = item.lineIndex > 0 && lines[item.lineIndex - 1].trimmingCharacters(in: .whitespaces).isEmpty
-            if prevBlank {
-                lines.remove(at: item.lineIndex)
-            }
-        }
+        let insertAt = todoInsertIndex(
+            sectionTitle: item.section,
+            completed: markCompleted,
+            preferEnd: true
+        )
+        let clamped = min(max(insertAt, 0), lines.count)
+        lines.insert(newLine, at: clamped)
 
         do {
             try writeFile()
             var commitPaths = [filePath]
-            if let cl = try appendChangelogIfPresent(completedText: item.text) {
+            if markCompleted, let cl = try appendChangelogIfPresent(completedText: item.text) {
                 commitPaths.append(cl)
             }
-            let msg = Self.commitMessage(prefix: "Complete", text: item.text)
+            let prefix = markCompleted ? "Complete" : "Reopen"
+            let msg = Self.commitMessage(prefix: prefix, text: item.text)
             try gitCommit(message: msg, files: commitPaths)
-            lastStatus = "Completed · committed"
+            lastStatus = markCompleted ? "Completed · committed" : "Reopened · committed"
             reload()
         } catch {
             lastError = error.localizedDescription
             reload()
         }
+    }
+
+    /// Insert index for a todo in `sectionTitle`: open items before completed; completed at end of section.
+    private func todoInsertIndex(sectionTitle: String, completed: Bool, preferEnd: Bool) -> Int {
+        var current: String?
+        var firstTodo: Int?
+        var lastOpen: Int?
+        var lastTodo: Int?
+        var firstCompleted: Int?
+        var headerIndex: Int?
+        var nextHeader: Int?
+
+        for (offset, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("## ") {
+                let title = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                if current == sectionTitle, nextHeader == nil {
+                    nextHeader = offset
+                }
+                current = title
+                if current == sectionTitle {
+                    headerIndex = offset
+                    firstTodo = nil
+                    lastOpen = nil
+                    lastTodo = nil
+                    firstCompleted = nil
+                    nextHeader = nil
+                }
+                continue
+            }
+            guard current == sectionTitle, Self.isTodoLine(line) else { continue }
+            if firstTodo == nil { firstTodo = offset }
+            lastTodo = offset
+            if Self.isCompletedTodoLine(line) {
+                if firstCompleted == nil { firstCompleted = offset }
+            } else {
+                lastOpen = offset
+            }
+        }
+
+        if completed {
+            if let last = lastTodo { return last + 1 }
+            if let header = headerIndex { return header + 1 }
+            return lines.count
+        }
+
+        // Open: after last open, or before first completed, or after header
+        if let last = lastOpen { return last + 1 }
+        if let firstDone = firstCompleted { return firstDone }
+        if let last = lastTodo { return last + 1 }
+        if let header = headerIndex { return header + 1 }
+        if preferEnd { return lines.count }
+        return firstTodo ?? lines.count
     }
 
     // MARK: - Add
@@ -182,8 +246,16 @@ final class TodoStore: ObservableObject {
             ?? "To-Dos"
         let newLine = "- \(trimmed)"
 
-        if let insertAt = insertIndex(forSection: target) {
-            lines.insert(newLine, at: insertAt)
+        let hasHeader = lines.contains {
+            $0.trimmingCharacters(in: .whitespaces) == "## \(target)"
+        }
+        let hasSection = sections.contains(where: { $0.title == target }) || hasHeader
+        // Default bucket with no `##` — still append among existing dash lines
+        let hasLooseTodos = target == "To-Dos" && lines.contains(where: Self.isTodoLine)
+
+        if hasSection || hasLooseTodos {
+            let insertAt = todoInsertIndex(sectionTitle: target, completed: false, preferEnd: true)
+            lines.insert(newLine, at: min(max(insertAt, 0), lines.count))
         } else {
             // Empty / no matching section — ensure header then item
             if lines.isEmpty || (lines.count == 1 && lines[0].isEmpty) {
@@ -207,43 +279,6 @@ final class TodoStore: ObservableObject {
             lastError = error.localizedDescription
             reload()
         }
-    }
-
-    /// Index after the last open-todo line in `sectionTitle`, or right after its `##` header.
-    private func insertIndex(forSection sectionTitle: String) -> Int? {
-        var current: String?
-        var lastTodoInSection: Int?
-        var headerIndex: Int?
-
-        for (offset, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("## ") {
-                current = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                if current == sectionTitle {
-                    headerIndex = offset
-                    lastTodoInSection = nil
-                }
-                continue
-            }
-            guard current == sectionTitle, Self.isTodoLine(line) else { continue }
-            lastTodoInSection = offset
-        }
-
-        if let last = lastTodoInSection {
-            return last + 1
-        }
-        if let header = headerIndex {
-            return header + 1
-        }
-        // Section only exists in parse defaults (no ## in file)
-        if sectionTitle == "To-Dos", !sections.isEmpty || lines.contains(where: Self.isTodoLine) {
-            // Append after last todo in file, or at end
-            if let last = lines.lastIndex(where: Self.isTodoLine) {
-                return last + 1
-            }
-            return lines.count
-        }
-        return nil
     }
 
     // MARK: - Edit
@@ -274,7 +309,7 @@ final class TodoStore: ObservableObject {
         }
 
         let indent = Self.leadingWhitespace(line)
-        lines[item.lineIndex] = "\(indent)- \(trimmed)"
+        lines[item.lineIndex] = Self.formatTodoLine(indent: indent, text: trimmed, completed: item.isCompleted)
 
         do {
             try writeFile()
@@ -290,6 +325,7 @@ final class TodoStore: ObservableObject {
 
     // MARK: - Reorder
 
+    /// Reorder **open** items only (completed stay at section bottom).
     func moveItems(in sectionTitle: String, from source: IndexSet, to destination: Int) {
         guard !isBusy else { return }
         guard let section = sections.first(where: { $0.title == sectionTitle }) else { return }
@@ -300,23 +336,24 @@ final class TodoStore: ObservableObject {
         lastStatus = nil
         defer { isBusy = false }
 
-        var items = section.items
-        items.move(fromOffsets: source, toOffset: destination)
+        var openItems = section.items.filter { !$0.isCompleted }
+        guard !openItems.isEmpty else { return }
+        openItems.move(fromOffsets: source, toOffset: destination)
 
-        let slots = section.items.map(\.lineIndex).sorted()
-        guard slots.count == items.count else {
+        let slots = section.items.filter { !$0.isCompleted }.map(\.lineIndex).sorted()
+        guard slots.count == openItems.count else {
             lastError = "Reorder failed — refresh"
             return
         }
 
-        for (slot, item) in zip(slots, items) {
+        for (slot, item) in zip(slots, openItems) {
             guard slot < lines.count, Self.isTodoLine(lines[slot]) else {
                 lastError = "Reorder failed — file changed"
                 reload()
                 return
             }
             let indent = Self.leadingWhitespace(lines[slot])
-            lines[slot] = "\(indent)- \(item.text)"
+            lines[slot] = Self.formatTodoLine(indent: indent, text: item.text, completed: false)
         }
 
         do {
@@ -360,35 +397,57 @@ final class TodoStore: ObservableObject {
             guard !text.isEmpty else { continue }
 
             let indent = leadingWhitespace(line).count
+            let done = isCompletedTodoLine(line)
             let sectionIndex = ensureSection(currentTitle)
             let item = TodoItem(
-                id: "\(offset)-\(text)",
+                id: "\(offset)-\(done ? "x" : "o")-\(text)",
                 text: text,
                 section: currentTitle,
                 lineIndex: offset,
-                indent: indent
+                indent: indent,
+                isCompleted: done
             )
             buckets[sectionIndex].items.append(item)
         }
 
+        // Open first, completed last (stable within each group)
         return buckets
-            .filter { !$0.items.isEmpty }
-            .map { TodoSection(id: $0.title, title: $0.title, items: $0.items) }
+            .map { bucket in
+                let open = bucket.items.filter { !$0.isCompleted }
+                let done = bucket.items.filter(\.isCompleted)
+                return (bucket.title, open + done)
+            }
+            .filter { !$0.1.isEmpty }
+            .map { TodoSection(id: $0.0, title: $0.0, items: $0.1) }
     }
 
     static func isTodoLine(_ line: String) -> Bool {
         line.range(of: #"^[\t ]*-\s+\S"#, options: .regularExpression) != nil
     }
 
+    /// `- [x] …` / `- [X] …` (GFM done).
+    static func isCompletedTodoLine(_ line: String) -> Bool {
+        line.range(of: #"^[\t ]*-\s+\[[xX]\](\s|$)"#, options: .regularExpression) != nil
+    }
+
+    /// Body after `- ` and optional `[x]` / `[ ]` checkbox.
     static func todoText(_ line: String) -> String {
         guard let dashRange = line.range(of: #"^[\t ]*-\s+"#, options: .regularExpression) else {
             return ""
         }
-        return String(line[dashRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+        var rest = String(line[dashRange.upperBound...])
+        if let box = rest.range(of: #"^\[[xX ]\]\s*"#, options: .regularExpression) {
+            rest = String(rest[box.upperBound...])
+        }
+        return rest.trimmingCharacters(in: .whitespaces)
     }
 
     static func leadingWhitespace(_ line: String) -> String {
         String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+    }
+
+    static func formatTodoLine(indent: String, text: String, completed: Bool) -> String {
+        completed ? "\(indent)- [x] \(text)" : "\(indent)- \(text)"
     }
 
     // MARK: - Write

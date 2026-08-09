@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var newTodoText = ""
     @State private var showAddField = false
+    @State private var showCompleted = false
     @FocusState private var newTodoFocused: Bool
 
     private var store: TodoStore { model.store }
@@ -16,13 +17,19 @@ struct ContentView: View {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var completedCount: Int {
+        store.sections.reduce(0) { $0 + $1.items.filter(\.isCompleted).count }
+    }
+
     private var filtered: [TodoSection] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return store.sections }
         return store.sections.compactMap { section in
-            let items = section.items.filter {
-                $0.text.localizedCaseInsensitiveContains(q)
-                    || section.title.localizedCaseInsensitiveContains(q)
+            var items = section.items.filter { showCompleted || !$0.isCompleted }
+            if !q.isEmpty {
+                items = items.filter {
+                    $0.text.localizedCaseInsensitiveContains(q)
+                        || section.title.localizedCaseInsensitiveContains(q)
+                }
             }
             guard !items.isEmpty else { return nil }
             return TodoSection(id: section.id, title: section.title, items: items)
@@ -214,8 +221,10 @@ struct ContentView: View {
     private var list: some View {
         List {
             ForEach(filtered) { section in
+                let openItems = section.items.filter { !$0.isCompleted }
+                let doneItems = section.items.filter(\.isCompleted)
                 Section {
-                    ForEach(section.items) { item in
+                    ForEach(openItems) { item in
                         TodoRow(
                             item: item,
                             onComplete: { store.complete(item) },
@@ -225,6 +234,15 @@ struct ContentView: View {
                     .onMove { source, dest in
                         guard !isFiltering else { return }
                         store.moveItems(in: section.title, from: source, to: dest)
+                    }
+                    if showCompleted {
+                        ForEach(doneItems) { item in
+                            TodoRow(
+                                item: item,
+                                onComplete: { store.complete(item) },
+                                onSave: { store.updateItem(item, text: $0) }
+                            )
+                        }
                     }
                 } header: {
                     Text(section.title)
@@ -263,6 +281,11 @@ struct ContentView: View {
                 Button("Refresh") { store.reload() }
                 Button("Open File") { store.openInEditor() }
                 Button("Reveal") { store.revealInFinder() }
+                if completedCount > 0 {
+                    Button(showCompleted ? "Hide Completed" : "Show Completed (\(completedCount))") {
+                        showCompleted.toggle()
+                    }
+                }
                 Spacer()
                 if !isFiltering {
                     Text("Drag To Reorder")
@@ -338,14 +361,14 @@ private struct TodoRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Button(action: onComplete) {
-                Image(systemName: "circle")
+                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
                     .frame(width: 18, height: 18)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Mark Complete (commits)")
+            .help(item.isCompleted ? "Reopen (commits)" : "Mark Complete (commits)")
 
             if editing {
                 TextField("To-Do", text: $draft)
@@ -358,6 +381,8 @@ private struct TodoRow: View {
             } else {
                 Text(item.text)
                     .font(.system(size: 13))
+                    .strikethrough(item.isCompleted)
+                    .foregroundStyle(item.isCompleted ? .secondary : .primary)
                     .lineLimit(expanded ? nil : 1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -373,15 +398,18 @@ private struct TodoRow: View {
                     .help(expanded ? "Double-Click To Edit" : "Click To Expand · Double-Click To Edit")
             }
 
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11))
-                .foregroundStyle(.quaternary)
-                .help("Drag To Reorder")
+            if !item.isCompleted {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.quaternary)
+                    .help("Drag To Reorder")
+            }
         }
         .padding(.leading, CGFloat(min(item.indent, 8)) * 4)
         .padding(.vertical, 2)
+        .opacity(item.isCompleted ? 0.75 : 1)
         .contextMenu {
-            Button("Mark Complete") { onComplete() }
+            Button(item.isCompleted ? "Reopen" : "Mark Complete") { onComplete() }
             Button("Edit…") { beginEdit() }
             Button("Copy") {
                 NSPasteboard.general.clearContents()

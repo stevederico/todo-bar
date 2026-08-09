@@ -15,11 +15,11 @@
 - Tabs for multiple files (default: `~/todos.md`, then `~/Documents/todos.md`)
 - **+** adds another `.md` (e.g. `books.md`, `deals.md`, `marketing/todo.md`)
 - Right-click tab → Rename / Reveal / Remove
-- Shows open items (`- task`) grouped by `##` section
+- Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
 - **+** — reveals New To-Do field under the tabs; appends to last section; commits
 - **Click** — expand truncated text; **double-click** (or right-click → Edit) to rewrite; commits
-- **Complete** — removes the line; if `CHANGELOG.md` exists beside the file or at git root, logs under today (`MM/DD/YY`, 2-space indent); `git commit`s
-- **Reorder** — drag within a section; rewrites + commits
+- **Complete** — writes `- [x] task`, moves to bottom of section; if `CHANGELOG.md` exists beside the file or at git root, logs under today (`MM/DD/YY`, 2-space indent); `git commit`s. Click again to reopen
+- **Reorder** — drag open items within a section; rewrites + commits
 - Live-reloads when the active file changes
 - Tabs persist in UserDefaults
 
@@ -37,7 +37,7 @@ open "build/todo-bar.app"
 ## Format
 
 - `- item` = open (shown)
-- no leading dash = done / not listed
+- `- [x] item` = completed (bottom of section; hidden until Show Completed)
 - `## Section` = group header
 
 ## Sample data

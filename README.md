@@ -19,6 +19,7 @@
 - **+** — new to-do is **prepended at the top** of the first section (pre-header `To-Dos` when present)
 - **Click** circle — mark complete (`- [x]`), hide from open list; **Show Completed** to see / reopen
 - **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
+- **Right-click** — Mark Complete / Reopen, Move, Edit, Copy, **Delete**
 - **Reorder** — ↑↓ on open items (or context menu)
 - Live-reloads when the active file changes; tabs persist in UserDefaults
 

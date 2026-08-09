@@ -22,6 +22,7 @@ struct SmokeMain {
         testCompleteMovesToBottom()
         testReopenMovesAboveCompleted()
         testUpdatePreservesState()
+        testDeleteRemovesLine()
         testReorderOpenOnly()
         testInsertIndexHelpers()
         await testStoreIntegration()
@@ -177,6 +178,27 @@ struct SmokeMain {
         let done = doc.parse().flatMap(\.items).first { $0.text == "bye" }!
         try! doc.updateItem(text: "bye", section: "S", lineIndex: done.lineIndex, isCompleted: true, newText: "bye now")
         check("edited done keeps [x]", doc.lines.contains { $0.contains("[x]") && $0.contains("bye now") })
+    }
+
+    static func testDeleteRemovesLine() {
+        print("== delete ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - keep
+        - drop me
+        - [x] done
+        """)
+        let drop = doc.parse().flatMap(\.items).first { $0.text == "drop me" }!
+        try! doc.deleteItem(text: drop.text, section: drop.section, lineIndex: drop.lineIndex, isCompleted: false)
+        check("open gone", !doc.text.contains("drop me"))
+        check("keep remains", doc.text.contains("- keep"))
+        check("done remains", doc.text.contains("- [x] done"))
+        check("openCount 1", doc.openCount == 1)
+
+        let done = doc.parse().flatMap(\.items).first { $0.text == "done" && $0.isCompleted }!
+        try! doc.deleteItem(text: done.text, section: done.section, lineIndex: done.lineIndex, isCompleted: true)
+        check("done gone", !doc.text.contains("[x] done"))
+        check("completedCount 0", doc.completedCount == 0)
     }
 
     static func testReorderOpenOnly() {

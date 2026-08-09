@@ -1,6 +1,10 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.4.0
+
+  Add delete menu item
+
 0.3.1
 
   Fix nested store observation

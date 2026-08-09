@@ -232,6 +232,7 @@ struct ContentView: View {
                             canMoveDown: index < openItems.count - 1 && !isFiltering,
                             onComplete: { store.complete(item) },
                             onSave: { store.updateItem(item, text: $0) },
+                            onDelete: { store.deleteItem(item) },
                             onMoveUp: { store.moveOpenItem(item, direction: -1) },
                             onMoveDown: { store.moveOpenItem(item, direction: 1) }
                         )
@@ -246,6 +247,7 @@ struct ContentView: View {
                                 canMoveDown: false,
                                 onComplete: { store.complete(item) },
                                 onSave: { store.updateItem(item, text: $0) },
+                                onDelete: { store.deleteItem(item) },
                                 onMoveUp: {},
                                 onMoveDown: {}
                             )
@@ -351,6 +353,7 @@ private struct TodoRow: View {
     let canMoveDown: Bool
     let onComplete: () -> Void
     let onSave: (String) -> Void
+    let onDelete: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
 
@@ -432,6 +435,8 @@ private struct TodoRow: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(item.text, forType: .string)
             }
+            Divider()
+            Button("Delete", role: .destructive) { onDelete() }
         }
         .onChange(of: item.text) { _ in
             if editing { cancelEdit() }

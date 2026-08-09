@@ -170,6 +170,27 @@ final class TodoStore: ObservableObject {
         }
     }
 
+    func deleteItem(_ item: TodoItem) {
+        guard !isBusy else { return }
+        lastError = nil
+        do {
+            try doc.deleteItem(
+                text: item.text,
+                section: item.section,
+                lineIndex: item.lineIndex,
+                isCompleted: item.isCompleted
+            )
+            try save(
+                status: "Deleted",
+                commitMessage: TodoDocument.commitMessage(prefix: "Delete", text: item.text),
+                files: [filePath]
+            )
+        } catch {
+            lastError = error.localizedDescription
+            reload()
+        }
+    }
+
     func moveItems(in sectionTitle: String, from source: IndexSet, to destination: Int) {
         guard !isBusy else { return }
         lastError = nil

@@ -203,6 +203,25 @@ struct TodoDocument: Equatable {
         lines[idx] = Self.formatTodoLine(indent: indent, text: trimmed, completed: isCompleted)
     }
 
+    /// Remove the todo line entirely (open or completed).
+    mutating func deleteItem(text: String, section: String, lineIndex hint: Int, isCompleted: Bool) throws {
+        guard let idx = resolveLineIndex(text: text, section: section, hint: hint, isCompleted: isCompleted) else {
+            throw TodoDocError.notFound
+        }
+        let line = lines[idx]
+        guard Self.isTodoLine(line), Self.todoText(line) == text else {
+            throw TodoDocError.invalidLine
+        }
+        lines.remove(at: idx)
+        // Drop a blank line that would double-stack after removal
+        if idx < lines.count, lines[idx].trimmingCharacters(in: .whitespaces).isEmpty {
+            let prevBlank = idx > 0 && lines[idx - 1].trimmingCharacters(in: .whitespaces).isEmpty
+            if prevBlank {
+                lines.remove(at: idx)
+            }
+        }
+    }
+
     /// Reorder open items only within a section (completed stay at bottom).
     mutating func moveOpenItems(in sectionTitle: String, from source: IndexSet, to destination: Int) throws {
         let section = parse().first { $0.title == sectionTitle }

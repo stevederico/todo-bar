@@ -97,6 +97,22 @@ struct ContentView: View {
                 .background(.quaternary, in: Capsule())
 
             Button {
+                model.pickAndAddSource()
+            } label: {
+                Text("Add List")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Add Another Todo File")
+
+            Button {
                 withAnimation(.easeOut(duration: 0.15)) {
                     showAddField.toggle()
                 }
@@ -124,22 +140,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help(showAddField ? "Hide New To-Do" : "Add To-Do")
-
-            Button {
-                model.pickAndAddSource()
-            } label: {
-                Text("Add List")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .help("Add Another Todo File")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

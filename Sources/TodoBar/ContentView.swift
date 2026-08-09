@@ -360,15 +360,14 @@ private struct TodoRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Button(action: onComplete) {
-                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(item.isCompleted ? "Reopen (commits)" : "Mark Complete (commits)")
+            // List + onMove eats plain Buttons — borderless + explicit tap target.
+            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .onTapGesture { onComplete() }
+                .help(item.isCompleted ? "Reopen (commits)" : "Mark Complete (commits)")
 
             if editing {
                 TextField("To-Do", text: $draft)

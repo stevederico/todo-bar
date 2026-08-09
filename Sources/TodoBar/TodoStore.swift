@@ -124,73 +124,113 @@ final class TodoStore: ObservableObject {
 
     /// Mark open item done (`- [x]`), move to bottom of its section; optionally log CHANGELOG; git commit.
     /// If already completed, uncomplete (`- item`) and move above completed block.
+    /// File write always wins — git is best-effort so a commit failure can't undo complete.
     func complete(_ item: TodoItem) {
         guard !isBusy else { return }
         isBusy = true
         lastError = nil
         lastStatus = nil
-        defer { isBusy = false }
 
-        guard item.lineIndex >= 0, item.lineIndex < lines.count else {
+        guard let lineIndex = resolveLineIndex(for: item) else {
             lastError = "Item out of date — refresh and try again"
+            isBusy = false
             reload()
             return
         }
 
-        let line = lines[item.lineIndex]
-        guard Self.isTodoLine(line), Self.todoText(line) == item.text else {
-            lastError = "File changed under us — refresh and try again"
-            reload()
-            return
-        }
-
+        let line = lines[lineIndex]
         let indent = Self.leadingWhitespace(line)
         let wasCompleted = Self.isCompletedTodoLine(line)
         let markCompleted = !wasCompleted
         let newLine = Self.formatTodoLine(indent: indent, text: item.text, completed: markCompleted)
 
-        lines.remove(at: item.lineIndex)
+        lines.remove(at: lineIndex)
         let insertAt = todoInsertIndex(
             sectionTitle: item.section,
             completed: markCompleted,
             preferEnd: true
         )
-        let clamped = min(max(insertAt, 0), lines.count)
-        lines.insert(newLine, at: clamped)
+        lines.insert(newLine, at: min(max(insertAt, 0), lines.count))
 
         do {
             try writeFile()
-            var commitPaths = [filePath]
-            if markCompleted, let cl = try appendChangelogIfPresent(completedText: item.text) {
-                commitPaths.append(cl)
-            }
-            let prefix = markCompleted ? "Complete" : "Reopen"
-            let msg = Self.commitMessage(prefix: prefix, text: item.text)
-            try gitCommit(message: msg, files: commitPaths)
-            lastStatus = markCompleted ? "Completed · committed" : "Reopened · committed"
-            reload()
         } catch {
             lastError = error.localizedDescription
+            isBusy = false
             reload()
+            return
+        }
+
+        // Refresh UI from the lines we just wrote (don't wait on git).
+        reparseFromLines()
+        isBusy = false
+        lastStatus = markCompleted ? "Completed" : "Reopened"
+
+        var commitPaths = [filePath]
+        if markCompleted {
+            do {
+                if let cl = try appendChangelogIfPresent(completedText: item.text) {
+                    commitPaths.append(cl)
+                }
+            } catch {
+                // Changelog is optional; keep the completed todo.
+            }
+        }
+        let prefix = markCompleted ? "Complete" : "Reopen"
+        let msg = Self.commitMessage(prefix: prefix, text: item.text)
+        do {
+            try gitCommit(message: msg, files: commitPaths)
+            lastStatus = markCompleted ? "Completed · committed" : "Reopened · committed"
+        } catch {
+            // Not a git repo / commit hook noise — file already saved.
+            lastStatus = markCompleted ? "Completed · not committed" : "Reopened · not committed"
         }
     }
 
+    /// Match by lineIndex + text, else scan for the same open/completed line text.
+    private func resolveLineIndex(for item: TodoItem) -> Int? {
+        if item.lineIndex >= 0, item.lineIndex < lines.count {
+            let line = lines[item.lineIndex]
+            if Self.isTodoLine(line), Self.todoText(line) == item.text {
+                return item.lineIndex
+            }
+        }
+        for (offset, line) in lines.enumerated() {
+            guard Self.isTodoLine(line), Self.todoText(line) == item.text else { continue }
+            if Self.isCompletedTodoLine(line) == item.isCompleted {
+                return offset
+            }
+        }
+        return lines.firstIndex { Self.isTodoLine($0) && Self.todoText($0) == item.text }
+    }
+
+    private func reparseFromLines() {
+        let parsed = Self.parse(lines: lines)
+        sections = parsed
+        itemCount = parsed.reduce(0) { $0 + $1.items.filter { !$0.isCompleted }.count }
+        lastLoadedAt = Date()
+    }
+
     /// Insert index for a todo in `sectionTitle`: open items before completed; completed at end of section.
+    /// Default section `"To-Dos"` also owns dash-lines before the first `##` header.
     private func todoInsertIndex(sectionTitle: String, completed: Bool, preferEnd: Bool) -> Int {
-        var current: String?
+        var current = "To-Dos"
         var firstTodo: Int?
         var lastOpen: Int?
         var lastTodo: Int?
         var firstCompleted: Int?
         var headerIndex: Int?
-        var nextHeader: Int?
+        var sectionEnd: Int? // first line after this section (next ##)
 
         for (offset, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("## ") {
-                let title = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                if current == sectionTitle, nextHeader == nil {
-                    nextHeader = offset
+            if trimmed.hasPrefix("##") {
+                let title = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                if current == sectionTitle, sectionEnd == nil, offset > (headerIndex ?? -1) {
+                    // Leaving the target section
+                    if headerIndex != nil || sectionTitle == "To-Dos" {
+                        sectionEnd = offset
+                    }
                 }
                 current = title
                 if current == sectionTitle {
@@ -199,7 +239,7 @@ final class TodoStore: ObservableObject {
                     lastOpen = nil
                     lastTodo = nil
                     firstCompleted = nil
-                    nextHeader = nil
+                    sectionEnd = nil
                 }
                 continue
             }
@@ -216,6 +256,8 @@ final class TodoStore: ObservableObject {
         if completed {
             if let last = lastTodo { return last + 1 }
             if let header = headerIndex { return header + 1 }
+            // Pre-header "To-Dos": before first ##, or end of file
+            if sectionTitle == "To-Dos", let end = sectionEnd { return end }
             return lines.count
         }
 
@@ -224,6 +266,7 @@ final class TodoStore: ObservableObject {
         if let firstDone = firstCompleted { return firstDone }
         if let last = lastTodo { return last + 1 }
         if let header = headerIndex { return header + 1 }
+        if sectionTitle == "To-Dos", let end = sectionEnd { return end }
         if preferEnd { return lines.count }
         return firstTodo ?? lines.count
     }
@@ -386,8 +429,8 @@ final class TodoStore: ObservableObject {
         for (offset, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            if trimmed.hasPrefix("## ") {
-                currentTitle = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("##") {
+                currentTitle = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                 _ = ensureSection(currentTitle)
                 continue
             }

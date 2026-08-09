@@ -1,6 +1,11 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.2.1
+
+  Fix complete tap
+  Write before git
+
 0.2.0
 
   Keep completed items

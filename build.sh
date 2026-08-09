@@ -53,3 +53,8 @@ codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
 echo "Built: $APP_DIR"
 echo "  Run:   open \"$APP_DIR\""
 echo "  Install: cp -R \"$APP_DIR\" ~/Applications/"
+
+# Optional: ./build.sh --smoke  or  SMOKE=1 ./build.sh
+if [[ "${1:-}" == "--smoke" || "${SMOKE:-}" == "1" ]]; then
+  bash "$ROOT/scripts/smoke.sh"
+fi

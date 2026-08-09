@@ -34,6 +34,13 @@
 open "build/todo-bar.app"
 ```
 
+Smoke (parse + add/complete/edit against a temp git repo, asserts UI unlocks without waiting on git):
+
+```bash
+./build.sh --smoke
+# or: bash scripts/smoke.sh
+```
+
 ## Format
 
 - `- item` = open (shown)

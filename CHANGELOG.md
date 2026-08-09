@@ -1,6 +1,12 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.2.2
+
+  Unblock add spinner
+  Async git timeout
+  Add smoke tests
+
 0.2.1
 
   Fix complete tap

@@ -124,7 +124,7 @@ final class TodoStore: ObservableObject {
 
     /// Mark open item done (`- [x]`), move to bottom of its section; optionally log CHANGELOG; git commit.
     /// If already completed, uncomplete (`- item`) and move above completed block.
-    /// File write always wins — git is best-effort so a commit failure can't undo complete.
+    /// File write always wins — git is async/best-effort and never holds the spinner.
     func complete(_ item: TodoItem) {
         guard !isBusy else { return }
         isBusy = true
@@ -132,9 +132,7 @@ final class TodoStore: ObservableObject {
         lastStatus = nil
 
         guard let lineIndex = resolveLineIndex(for: item) else {
-            lastError = "Item out of date — refresh and try again"
-            isBusy = false
-            reload()
+            failBusy("Item out of date — refresh and try again")
             return
         }
 
@@ -152,39 +150,16 @@ final class TodoStore: ObservableObject {
         )
         lines.insert(newLine, at: min(max(insertAt, 0), lines.count))
 
-        do {
-            try writeFile()
-        } catch {
-            lastError = error.localizedDescription
-            isBusy = false
-            reload()
-            return
-        }
-
-        // Refresh UI from the lines we just wrote (don't wait on git).
-        reparseFromLines()
-        isBusy = false
-        lastStatus = markCompleted ? "Completed" : "Reopened"
-
         var commitPaths = [filePath]
-        if markCompleted {
-            do {
-                if let cl = try appendChangelogIfPresent(completedText: item.text) {
-                    commitPaths.append(cl)
-                }
-            } catch {
-                // Changelog is optional; keep the completed todo.
-            }
+        if markCompleted, let cl = try? appendChangelogIfPresent(completedText: item.text) {
+            commitPaths.append(cl)
         }
         let prefix = markCompleted ? "Complete" : "Reopen"
-        let msg = Self.commitMessage(prefix: prefix, text: item.text)
-        do {
-            try gitCommit(message: msg, files: commitPaths)
-            lastStatus = markCompleted ? "Completed · committed" : "Reopened · committed"
-        } catch {
-            // Not a git repo / commit hook noise — file already saved.
-            lastStatus = markCompleted ? "Completed · not committed" : "Reopened · not committed"
-        }
+        persist(
+            status: markCompleted ? "Completed" : "Reopened",
+            commitMessage: Self.commitMessage(prefix: prefix, text: item.text),
+            files: commitPaths
+        )
     }
 
     /// Match by lineIndex + text, else scan for the same open/completed line text.
@@ -282,7 +257,6 @@ final class TodoStore: ObservableObject {
         isBusy = true
         lastError = nil
         lastStatus = nil
-        defer { isBusy = false }
 
         let target = sectionTitle
             ?? sections.last?.title
@@ -290,7 +264,8 @@ final class TodoStore: ObservableObject {
         let newLine = "- \(trimmed)"
 
         let hasHeader = lines.contains {
-            $0.trimmingCharacters(in: .whitespaces) == "## \(target)"
+            let t = $0.trimmingCharacters(in: .whitespaces)
+            return t == "## \(target)" || t == "##\(target)"
         }
         let hasSection = sections.contains(where: { $0.title == target }) || hasHeader
         // Default bucket with no `##` — still append among existing dash lines
@@ -312,16 +287,11 @@ final class TodoStore: ObservableObject {
             }
         }
 
-        do {
-            try writeFile()
-            let msg = Self.commitMessage(prefix: "Add", text: trimmed)
-            try gitCommit(message: msg, files: [filePath])
-            lastStatus = "Added · committed"
-            reload()
-        } catch {
-            lastError = error.localizedDescription
-            reload()
-        }
+        persist(
+            status: "Added",
+            commitMessage: Self.commitMessage(prefix: "Add", text: trimmed),
+            files: [filePath]
+        )
     }
 
     // MARK: - Edit
@@ -336,34 +306,21 @@ final class TodoStore: ObservableObject {
         isBusy = true
         lastError = nil
         lastStatus = nil
-        defer { isBusy = false }
 
-        guard item.lineIndex >= 0, item.lineIndex < lines.count else {
-            lastError = "Item out of date — refresh and try again"
-            reload()
+        guard let lineIndex = resolveLineIndex(for: item) else {
+            failBusy("Item out of date — refresh and try again")
             return
         }
 
-        let line = lines[item.lineIndex]
-        guard Self.isTodoLine(line), Self.todoText(line) == item.text else {
-            lastError = "File changed under us — refresh and try again"
-            reload()
-            return
-        }
-
+        let line = lines[lineIndex]
         let indent = Self.leadingWhitespace(line)
-        lines[item.lineIndex] = Self.formatTodoLine(indent: indent, text: trimmed, completed: item.isCompleted)
+        lines[lineIndex] = Self.formatTodoLine(indent: indent, text: trimmed, completed: item.isCompleted)
 
-        do {
-            try writeFile()
-            let msg = Self.commitMessage(prefix: "Edit", text: trimmed)
-            try gitCommit(message: msg, files: [filePath])
-            lastStatus = "Edited · committed"
-            reload()
-        } catch {
-            lastError = error.localizedDescription
-            reload()
-        }
+        persist(
+            status: "Edited",
+            commitMessage: Self.commitMessage(prefix: "Edit", text: trimmed),
+            files: [filePath]
+        )
     }
 
     // MARK: - Reorder
@@ -377,37 +334,81 @@ final class TodoStore: ObservableObject {
         isBusy = true
         lastError = nil
         lastStatus = nil
-        defer { isBusy = false }
 
         var openItems = section.items.filter { !$0.isCompleted }
-        guard !openItems.isEmpty else { return }
+        guard !openItems.isEmpty else {
+            isBusy = false
+            return
+        }
         openItems.move(fromOffsets: source, toOffset: destination)
 
         let slots = section.items.filter { !$0.isCompleted }.map(\.lineIndex).sorted()
         guard slots.count == openItems.count else {
-            lastError = "Reorder failed — refresh"
+            failBusy("Reorder failed — refresh")
             return
         }
 
         for (slot, item) in zip(slots, openItems) {
             guard slot < lines.count, Self.isTodoLine(lines[slot]) else {
-                lastError = "Reorder failed — file changed"
-                reload()
+                failBusy("Reorder failed — file changed")
                 return
             }
             let indent = Self.leadingWhitespace(lines[slot])
             lines[slot] = Self.formatTodoLine(indent: indent, text: item.text, completed: false)
         }
 
+        persist(
+            status: "Reordered",
+            commitMessage: "Reorder \(sectionTitle)",
+            files: [filePath]
+        )
+    }
+
+    // MARK: - Persist (write → UI → unlock → async git)
+
+    /// Write `lines`, refresh UI, clear spinner, then commit off the main thread.
+    private func persist(status: String, commitMessage: String, files: [URL]) {
         do {
             try writeFile()
-            let msg = "Reorder \(sectionTitle)"
-            try gitCommit(message: msg, files: [filePath])
-            lastStatus = "Reordered · committed"
-            reload()
         } catch {
             lastError = error.localizedDescription
+            isBusy = false
             reload()
+            return
+        }
+        reparseFromLines()
+        isBusy = false
+        lastStatus = status
+
+        let paths = files.map { $0.resolvingSymlinksInPath() }
+        let message = commitMessage
+        let token = status
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                try Self.gitCommitSync(message: message, files: paths)
+                await self?.markCommitted(token: token)
+            } catch {
+                await self?.markNotCommitted(token: token)
+            }
+        }
+    }
+
+    private func failBusy(_ message: String) {
+        lastError = message
+        isBusy = false
+        reload()
+    }
+
+    private func markCommitted(token: String) {
+        // Don't clobber a newer status from a later action.
+        if lastStatus == token || lastStatus == "\(token) · not committed" {
+            lastStatus = "\(token) · committed"
+        }
+    }
+
+    private func markNotCommitted(token: String) {
+        if lastStatus == token {
+            lastStatus = "\(token) · not committed"
         }
     }
 
@@ -564,14 +565,11 @@ final class TodoStore: ObservableObject {
         return "\(prefix) \(clipped)"
     }
 
-    // MARK: - Git
+    // MARK: - Git (sync helpers, safe off main; never block UI)
 
     private func gitRoot() throws -> URL {
         let dir = filePath.deletingLastPathComponent().path
-        let out = try run(
-            executable: "/usr/bin/git",
-            arguments: ["-C", dir, "rev-parse", "--show-toplevel"]
-        )
+        let out = try Self.runGit(arguments: ["-C", dir, "rev-parse", "--show-toplevel"])
         let path = out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else {
             throw NSError(
@@ -583,9 +581,19 @@ final class TodoStore: ObservableObject {
         return URL(fileURLWithPath: path)
     }
 
-    private func gitCommit(message: String, files: [URL]) throws {
-        let root = try gitRoot()
-        let rootPath = root.path
+    /// Nonisolated so `Task.detached` can commit without hopping back to MainActor mid-process.
+    nonisolated private static func gitCommitSync(message: String, files: [URL]) throws {
+        guard let first = files.first else { return }
+        let dir = first.deletingLastPathComponent().path
+        let rootOut = try runGit(arguments: ["-C", dir, "rev-parse", "--show-toplevel"])
+        let rootPath = rootOut.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rootPath.isEmpty else {
+            throw NSError(
+                domain: "todo-bar.git",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Not a git repository"]
+            )
+        }
 
         let relPaths: [String] = try files.map { file in
             let standardized = file.resolvingSymlinksInPath().path
@@ -601,33 +609,58 @@ final class TodoStore: ObservableObject {
             return rel.isEmpty ? file.lastPathComponent : rel
         }
 
-        _ = try run(executable: "/usr/bin/git", arguments: ["-C", rootPath, "add", "--"] + relPaths)
+        _ = try runGit(arguments: ["-C", rootPath, "add", "--"] + relPaths)
 
-        let status = try run(
-            executable: "/usr/bin/git",
+        let status = try runGit(
             arguments: ["-C", rootPath, "status", "--porcelain", "--"] + relPaths
         )
         if status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return
         }
 
-        _ = try run(
-            executable: "/usr/bin/git",
-            arguments: ["-C", rootPath, "commit", "-m", message]
-        )
+        _ = try runGit(arguments: ["-C", rootPath, "commit", "-m", message])
     }
 
+    /// Run git with no TTY prompts and a hard timeout (avoids infinite spinner).
     @discardableResult
-    private func run(executable: String, arguments: [String]) throws -> String {
+    nonisolated private static func runGit(arguments: [String], timeoutSeconds: Double = 8) throws -> String {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         proc.arguments = arguments
+        var env = ProcessInfo.processInfo.environment
+        // Never block on editor / credential / GPG pinentry in a menu-bar app.
+        env["GIT_EDITOR"] = "true"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["GC_TERMINAL_PROMPT"] = "0"
+        proc.environment = env
         let out = Pipe()
         let err = Pipe()
         proc.standardOutput = out
         proc.standardError = err
+        proc.standardInput = FileHandle.nullDevice
         try proc.run()
-        proc.waitUntilExit()
+
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            proc.waitUntilExit()
+            group.leave()
+        }
+        let waitResult = group.wait(timeout: .now() + timeoutSeconds)
+        if waitResult == .timedOut {
+            proc.terminate()
+            // Give terminate a beat, then kill if needed
+            if proc.isRunning {
+                proc.interrupt()
+            }
+            throw NSError(
+                domain: "todo-bar.git",
+                code: 124,
+                userInfo: [NSLocalizedDescriptionKey: "git timed out"]
+            )
+        }
+
         let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         if proc.terminationStatus != 0 {

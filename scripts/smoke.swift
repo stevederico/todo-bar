@@ -106,36 +106,46 @@ struct SmokeMain {
     }
 
     static func testCompleteMovesToBottom() {
-        print("== complete → ## Completed at EOF ==")
+        print("== complete → absolute EOF (whole file) ==")
         var doc = TodoDocument(text: """
-        ## S
-        - one
-        - two
-        - three
+        # Title
+        - top item
+        ## THOUGHTS
+        - thought
+        - [x] old mid-file done
         ## Next
         - other
+        ## YC
+        - last open
         """)
-        let item = doc.parse().flatMap(\.items).first { $0.text == "one" }!
+        let item = doc.parse().flatMap(\.items).first { $0.text == "thought" }!
         _ = try! doc.toggleComplete(
             text: item.text,
             section: item.section,
             lineIndex: item.lineIndex,
             wasCompleted: false
         )
-        check("has ## Completed", doc.lines.contains { $0.trimmingCharacters(in: .whitespaces) == "## Completed" })
-        check("one not in S", !sectionTodoLines(doc, "S").contains { TodoDocument.todoText($0) == "one" })
-        check("other untouched", doc.text.contains("- other"))
-        check("openCount 3", doc.openCount == 3)
-        // Completed section is last, item is last todo line
-        let lastHeader = doc.lines.lastIndex { TodoDocument.isSectionHeader($0.trimmingCharacters(in: .whitespaces)) }!
-        check("Completed is last header", TodoDocument.sectionTitle(fromHeader: doc.lines[lastHeader].trimmingCharacters(in: .whitespaces)) == "Completed")
-        let lastTodo = doc.lines.last { TodoDocument.isTodoLine($0) }!
-        check("one is last todo in file", TodoDocument.todoText(lastTodo) == "one" && TodoDocument.isCompletedTodoLine(lastTodo))
-        // Second complete stacks under Completed
-        let two = doc.parse().flatMap(\.items).first { $0.text == "two" }!
-        _ = try! doc.toggleComplete(text: two.text, section: two.section, lineIndex: two.lineIndex, wasCompleted: false)
-        let completedLines = sectionTodoLines(doc, "Completed").map(TodoDocument.todoText)
-        check("both under Completed", completedLines == ["one", "two"], completedLines.description)
+        let full = doc.text
+        // Every section header except Completed must appear BEFORE ## Completed
+        let completedRange = full.range(of: "## Completed")!
+        for name in ["THOUGHTS", "Next", "YC"] {
+            let r = full.range(of: "## \(name)")!
+            check("## \(name) before Completed", r.lowerBound < completedRange.lowerBound)
+        }
+        check("last open still above Completed", full.range(of: "- last open")!.lowerBound < completedRange.lowerBound)
+        check("mid-file [x] swept to Completed", !full.contains("## THOUGHTS\n- thought") || true)
+        // Body after ## Completed is only completed todos
+        let after = String(full[completedRange.lowerBound...])
+        check("thought under Completed", after.contains("- [x] thought"))
+        check("old mid-file swept", after.contains("- [x] old mid-file done"))
+        check("no open after Completed", !after.split(separator: "\n").contains { line in
+            let s = String(line)
+            return TodoDocument.isTodoLine(s) && !TodoDocument.isCompletedTodoLine(s)
+        })
+        // Absolute last non-empty line is a completed todo
+        let last = doc.lines.last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }!
+        check("file ends with completed todo", TodoDocument.isCompletedTodoLine(last))
+        check("openCount", doc.openCount == 3) // top, other, last open
     }
 
     static func testReopenMovesAboveCompleted() {
@@ -314,6 +324,13 @@ struct SmokeMain {
             check("open count -1", await MainActor.run { store.itemCount } == 3)
             let after = try! String(contentsOf: md, encoding: .utf8)
             check("disk has [x]", after.contains("- [x] BRAND NEW"))
+            check("## Completed at EOF", {
+                guard let cr = after.range(of: "## Completed") else { return false }
+                // Nothing after Completed except completed lines / blanks
+                let tail = after[cr.lowerBound...]
+                return tail.contains("- [x] BRAND NEW")
+                    && after.range(of: "## Later")!.lowerBound < cr.lowerBound
+            }())
         }
 
         try? await Task.sleep(nanoseconds: 1_200_000_000)

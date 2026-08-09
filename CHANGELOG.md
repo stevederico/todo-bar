@@ -1,6 +1,10 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.4.2
+
+  Sweep all done to EOF
+
 0.4.1
 
   Move done to file bottom

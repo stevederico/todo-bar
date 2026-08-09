@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var query = ""
     @State private var renameID: UUID?
     @State private var renameText = ""
+    @State private var newTodoText = ""
+    @FocusState private var newTodoFocused: Bool
 
     private var store: TodoStore { model.store }
 
@@ -141,9 +143,11 @@ struct ContentView: View {
             ForEach(filtered) { section in
                 Section {
                     ForEach(section.items) { item in
-                        TodoRow(item: item) {
-                            store.complete(item)
-                        }
+                        TodoRow(
+                            item: item,
+                            onComplete: { store.complete(item) },
+                            onSave: { store.updateItem(item, text: $0) }
+                        )
                     }
                     .onMove { source, dest in
                         guard !isFiltering else { return }
@@ -173,6 +177,22 @@ struct ContentView: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(.secondary)
+                TextField("New To-Do", text: $newTodoText)
+                    .textFieldStyle(.plain)
+                    .focused($newTodoFocused)
+                    .onSubmit { submitNewTodo() }
+                if !newTodoText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("Add") { submitNewTodo() }
+                        .buttonStyle(.borderless)
+                        .font(.caption.weight(.semibold))
+                }
+            }
+            .padding(8)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -205,6 +225,13 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
+    }
+
+    private func submitNewTodo() {
+        let text = newTodoText
+        newTodoText = ""
+        store.addItem(text: text)
+        newTodoFocused = true
     }
 }
 
@@ -243,6 +270,12 @@ extension UUID: @retroactive Identifiable {
 private struct TodoRow: View {
     let item: TodoItem
     let onComplete: () -> Void
+    let onSave: (String) -> Void
+
+    @State private var expanded = false
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -256,10 +289,31 @@ private struct TodoRow: View {
             .buttonStyle(.plain)
             .help("Mark Complete (commits)")
 
-            Text(item.text)
-                .font(.system(size: 13))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if editing {
+                TextField("To-Do", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($fieldFocused)
+                    .onSubmit { commitEdit() }
+                    .onExitCommand { cancelEdit() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(item.text)
+                    .font(.system(size: 13))
+                    .lineLimit(expanded ? nil : 1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        beginEdit()
+                    }
+                    .onTapGesture(count: 1) {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            expanded.toggle()
+                        }
+                    }
+                    .help(expanded ? "Double-Click To Edit" : "Click To Expand · Double-Click To Edit")
+            }
 
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11))
@@ -270,10 +324,37 @@ private struct TodoRow: View {
         .padding(.vertical, 2)
         .contextMenu {
             Button("Mark Complete") { onComplete() }
+            Button("Edit…") { beginEdit() }
             Button("Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(item.text, forType: .string)
             }
         }
+        .onChange(of: item.text) { _ in
+            if editing { cancelEdit() }
+            expanded = false
+        }
+    }
+
+    private func beginEdit() {
+        draft = item.text
+        editing = true
+        expanded = true
+        DispatchQueue.main.async {
+            fieldFocused = true
+        }
+    }
+
+    private func commitEdit() {
+        let value = draft
+        editing = false
+        fieldFocused = false
+        onSave(value)
+    }
+
+    private func cancelEdit() {
+        editing = false
+        fieldFocused = false
+        draft = item.text
     }
 }

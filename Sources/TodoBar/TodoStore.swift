@@ -164,6 +164,130 @@ final class TodoStore: ObservableObject {
         }
     }
 
+    // MARK: - Add
+
+    /// Append an open item to a section (default: last section, or "To-Dos").
+    func addItem(text: String, section sectionTitle: String? = nil) {
+        guard !isBusy else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        isBusy = true
+        lastError = nil
+        lastStatus = nil
+        defer { isBusy = false }
+
+        let target = sectionTitle
+            ?? sections.last?.title
+            ?? "To-Dos"
+        let newLine = "- \(trimmed)"
+
+        if let insertAt = insertIndex(forSection: target) {
+            lines.insert(newLine, at: insertAt)
+        } else {
+            // Empty / no matching section — ensure header then item
+            if lines.isEmpty || (lines.count == 1 && lines[0].isEmpty) {
+                lines = ["## \(target)", "", newLine]
+            } else {
+                if !lines.isEmpty, !lines[lines.count - 1].trimmingCharacters(in: .whitespaces).isEmpty {
+                    lines.append("")
+                }
+                lines.append("## \(target)")
+                lines.append(newLine)
+            }
+        }
+
+        do {
+            try writeFile()
+            let msg = Self.commitMessage(prefix: "Add", text: trimmed)
+            try gitCommit(message: msg, files: [filePath])
+            lastStatus = "Added · committed"
+            reload()
+        } catch {
+            lastError = error.localizedDescription
+            reload()
+        }
+    }
+
+    /// Index after the last open-todo line in `sectionTitle`, or right after its `##` header.
+    private func insertIndex(forSection sectionTitle: String) -> Int? {
+        var current: String?
+        var lastTodoInSection: Int?
+        var headerIndex: Int?
+
+        for (offset, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("## ") {
+                current = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                if current == sectionTitle {
+                    headerIndex = offset
+                    lastTodoInSection = nil
+                }
+                continue
+            }
+            guard current == sectionTitle, Self.isTodoLine(line) else { continue }
+            lastTodoInSection = offset
+        }
+
+        if let last = lastTodoInSection {
+            return last + 1
+        }
+        if let header = headerIndex {
+            return header + 1
+        }
+        // Section only exists in parse defaults (no ## in file)
+        if sectionTitle == "To-Dos", !sections.isEmpty || lines.contains(where: Self.isTodoLine) {
+            // Append after last todo in file, or at end
+            if let last = lines.lastIndex(where: Self.isTodoLine) {
+                return last + 1
+            }
+            return lines.count
+        }
+        return nil
+    }
+
+    // MARK: - Edit
+
+    /// Rewrite the text of an open item (indent preserved).
+    func updateItem(_ item: TodoItem, text newText: String) {
+        guard !isBusy else { return }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard trimmed != item.text else { return }
+
+        isBusy = true
+        lastError = nil
+        lastStatus = nil
+        defer { isBusy = false }
+
+        guard item.lineIndex >= 0, item.lineIndex < lines.count else {
+            lastError = "Item out of date — refresh and try again"
+            reload()
+            return
+        }
+
+        let line = lines[item.lineIndex]
+        guard Self.isTodoLine(line), Self.todoText(line) == item.text else {
+            lastError = "File changed under us — refresh and try again"
+            reload()
+            return
+        }
+
+        let indent = Self.leadingWhitespace(line)
+        lines[item.lineIndex] = "\(indent)- \(trimmed)"
+
+        do {
+            try writeFile()
+            let msg = Self.commitMessage(prefix: "Edit", text: trimmed)
+            try gitCommit(message: msg, files: [filePath])
+            lastStatus = "Edited · committed"
+            reload()
+        } catch {
+            lastError = error.localizedDescription
+            reload()
+        }
+    }
+
     // MARK: - Reorder
 
     func moveItems(in sectionTitle: String, from source: IndexSet, to destination: Int) {

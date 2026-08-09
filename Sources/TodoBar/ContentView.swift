@@ -66,14 +66,6 @@ struct ContentView: View {
             footer
         }
         .frame(width: 460, height: 580)
-        .disabled(store.isBusy)
-        .overlay {
-            if store.isBusy {
-                ProgressView()
-                    .padding(12)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
-        }
         .sheet(item: $renameID) { id in
             RenameSheet(
                 title: renameText,
@@ -86,7 +78,6 @@ struct ContentView: View {
         }
     }
 
-    /// Tabs, count, + (new to-do), Add List — single row.
     private var topBar: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -218,52 +209,62 @@ struct ContentView: View {
         .help(source.path)
     }
 
+    /// ScrollView (not List) — List+onMove steals checkbox taps on macOS.
     private var list: some View {
-        List {
-            ForEach(filtered) { section in
-                let openItems = section.items.filter { !$0.isCompleted }
-                let doneItems = section.items.filter(\.isCompleted)
-                Section {
-                    ForEach(openItems) { item in
-                        TodoRow(
-                            item: item,
-                            onComplete: { store.complete(item) },
-                            onSave: { store.updateItem(item, text: $0) }
-                        )
-                    }
-                    .onMove { source, dest in
-                        guard !isFiltering else { return }
-                        store.moveItems(in: section.title, from: source, to: dest)
-                    }
-                    if showCompleted {
-                        ForEach(doneItems) { item in
-                            TodoRow(
-                                item: item,
-                                onComplete: { store.complete(item) },
-                                onSave: { store.updateItem(item, text: $0) }
-                            )
-                        }
-                    }
-                } header: {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(filtered) { section in
+                    let openItems = section.items.filter { !$0.isCompleted }
+                    let doneItems = section.items.filter(\.isCompleted)
+
                     Text(section.title)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .padding(.bottom, 4)
+
+                    ForEach(Array(openItems.enumerated()), id: \.element.id) { index, item in
+                        TodoRow(
+                            item: item,
+                            canMoveUp: index > 0 && !isFiltering,
+                            canMoveDown: index < openItems.count - 1 && !isFiltering,
+                            onComplete: { store.complete(item) },
+                            onSave: { store.updateItem(item, text: $0) },
+                            onMoveUp: { store.moveOpenItem(item, direction: -1) },
+                            onMoveDown: { store.moveOpenItem(item, direction: 1) }
+                        )
+                        .padding(.horizontal, 8)
+                    }
+
+                    if showCompleted {
+                        ForEach(doneItems) { item in
+                            TodoRow(
+                                item: item,
+                                canMoveUp: false,
+                                canMoveDown: false,
+                                onComplete: { store.complete(item) },
+                                onSave: { store.updateItem(item, text: $0) },
+                                onMoveUp: {},
+                                onMoveDown: {}
+                            )
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                }
+
+                if filtered.isEmpty {
+                    Text(isFiltering ? "No matches" : "No open todos in this file")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
                 }
             }
-
-            if filtered.isEmpty {
-                Text(isFiltering ? "No matches" : "No open todos in this file")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40)
-                    .listRowSeparator(.hidden)
-            }
+            .padding(.bottom, 12)
         }
-        .listStyle(.sidebar)
-        .environment(\.defaultMinListRowHeight, 28)
-        .id(model.selectedID) // reset list scroll/state on tab switch
+        .id(model.selectedID)
     }
 
     private var footer: some View {
@@ -287,10 +288,6 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
-                if !isFiltering {
-                    Text("Drag To Reorder")
-                        .foregroundStyle(.tertiary)
-                }
                 Button("Quit") { NSApp.terminate(nil) }
                     .keyboardShortcut("q")
             }
@@ -350,8 +347,12 @@ extension UUID: @retroactive Identifiable {
 
 private struct TodoRow: View {
     let item: TodoItem
+    let canMoveUp: Bool
+    let canMoveDown: Bool
     let onComplete: () -> Void
     let onSave: (String) -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
 
     @State private var expanded = false
     @State private var editing = false
@@ -359,15 +360,16 @@ private struct TodoRow: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // List + onMove eats plain Buttons — borderless + explicit tap target.
-            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-                .onTapGesture { onComplete() }
-                .help(item.isCompleted ? "Reopen (commits)" : "Mark Complete (commits)")
+        HStack(alignment: .center, spacing: 8) {
+            Button(action: onComplete) {
+                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(item.isCompleted ? "Reopen" : "Mark Complete")
 
             if editing {
                 TextField("To-Do", text: $draft)
@@ -386,29 +388,50 @@ private struct TodoRow: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        beginEdit()
-                    }
+                    .onTapGesture(count: 2) { beginEdit() }
                     .onTapGesture(count: 1) {
-                        withAnimation(.easeOut(duration: 0.12)) {
-                            expanded.toggle()
-                        }
+                        withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
                     }
                     .help(expanded ? "Double-Click To Edit" : "Click To Expand · Double-Click To Edit")
             }
 
             if !item.isCompleted {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.quaternary)
-                    .help("Drag To Reorder")
+                HStack(spacing: 2) {
+                    Button(action: onMoveUp) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canMoveUp)
+                    .opacity(canMoveUp ? 0.55 : 0.15)
+                    .help("Move Up")
+
+                    Button(action: onMoveDown) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canMoveDown)
+                    .opacity(canMoveDown ? 0.55 : 0.15)
+                    .help("Move Down")
+                }
             }
         }
         .padding(.leading, CGFloat(min(item.indent, 8)) * 4)
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .background(Color.primary.opacity(0.02), in: RoundedRectangle(cornerRadius: 6))
         .opacity(item.isCompleted ? 0.75 : 1)
         .contextMenu {
             Button(item.isCompleted ? "Reopen" : "Mark Complete") { onComplete() }
+            if !item.isCompleted {
+                Button("Move Up") { onMoveUp() }
+                    .disabled(!canMoveUp)
+                Button("Move Down") { onMoveDown() }
+                    .disabled(!canMoveDown)
+            }
             Button("Edit…") { beginEdit() }
             Button("Copy") {
                 NSPasteboard.general.clearContents()
@@ -425,9 +448,7 @@ private struct TodoRow: View {
         draft = item.text
         editing = true
         expanded = true
-        DispatchQueue.main.async {
-            fieldFocused = true
-        }
+        DispatchQueue.main.async { fieldFocused = true }
     }
 
     private func commitEdit() {

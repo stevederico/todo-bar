@@ -16,12 +16,11 @@
 - **+** adds another `.md` (e.g. `books.md`, `deals.md`, `marketing/todo.md`)
 - Right-click tab → Rename / Reveal / Remove
 - Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
-- **+** — reveals New To-Do field under the tabs; appends to last section; commits
-- **Click** — expand truncated text; **double-click** (or right-click → Edit) to rewrite; commits
-- **Complete** — writes `- [x] task`, moves to bottom of section; if `CHANGELOG.md` exists beside the file or at git root, logs under today (`MM/DD/YY`, 2-space indent); `git commit`s. Click again to reopen
-- **Reorder** — drag open items within a section; rewrites + commits
-- Live-reloads when the active file changes
-- Tabs persist in UserDefaults
+- **+** — new to-do goes in the **first** section (top), before any completed lines; commits async
+- **Click** circle — mark complete (`- [x]`) and move to bottom of that section; click again to reopen
+- **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
+- **Reorder** — chevrons (or context menu Move Up/Down) on open items
+- Live-reloads when the active file changes; tabs persist in UserDefaults
 
 <p align="center">
   <img src="docs/screenshots/panel-books.png" alt="todo-bar books tab with sample reading list" width="400" />
@@ -34,7 +33,7 @@
 open "build/todo-bar.app"
 ```
 
-Smoke (parse + add/complete/edit against a temp git repo, asserts UI unlocks without waiting on git):
+Smoke / unit tests (pure `TodoDocument` + temp-repo store integration — required after logic changes):
 
 ```bash
 ./build.sh --smoke

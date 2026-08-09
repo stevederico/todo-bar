@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Headless smoke: compile TodoStore + smoke harness, run parse/add/complete/edit checks.
+# Headless unit + integration smoke for TodoDocument / TodoStore.
 set -euo pipefail
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
@@ -8,17 +8,18 @@ cd "$ROOT"
 
 OUT="$ROOT/build/todo-bar-smoke"
 mkdir -p "$ROOT/build"
+SDK="$(xcrun --sdk macosx --show-sdk-path)"
 
 echo "Compiling smoke harness..."
 swiftc \
   -O \
   -target arm64-apple-macos13.0 \
-  -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+  -sdk "$SDK" \
   -parse-as-library \
-  -framework SwiftUI \
   -framework AppKit \
   -framework Combine \
   -o "$OUT" \
+  "$ROOT/Sources/TodoBar/TodoDocument.swift" \
   "$ROOT/Sources/TodoBar/TodoStore.swift" \
   "$ROOT/scripts/smoke.swift"
 

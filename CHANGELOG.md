@@ -1,6 +1,14 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.3.0
+
+  Rewrite pure document core
+  Add first section only
+  Complete before done block
+  ScrollView clickable rows
+  Expand smoke coverage
+
 0.2.2
 
   Unblock add spinner

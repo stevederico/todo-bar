@@ -32,6 +32,7 @@ swiftc \
   -framework AppKit \
   -framework Combine \
   -o "$MACOS_DIR/$EXEC_NAME" \
+  "$SRC_DIR/TodoDocument.swift" \
   "$SRC_DIR/TodoStore.swift" \
   "$SRC_DIR/TodoSource.swift" \
   "$SRC_DIR/TodoBarModel.swift" \

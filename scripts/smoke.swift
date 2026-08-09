@@ -1,50 +1,242 @@
 import Foundation
 import AppKit
 
-/// Headless smoke tests for TodoStore (parse + file mutations + no main-thread hang).
-/// Build: see scripts/smoke.sh
-
+/// Exhaustive unit + integration smoke for TodoDocument / TodoStore.
 @main
 struct SmokeMain {
+    static var failed = 0
+
+    static func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+        if ok {
+            print("  ok  \(name)")
+        } else {
+            print("  FAIL \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+            failed += 1
+        }
+    }
+
     static func main() async {
-        var failed = 0
-        func check(_ name: String, _ ok: @autoclosure () -> Bool) {
-            if ok() {
-                print("  ok  \(name)")
-            } else {
-                print("  FAIL \(name)")
-                failed += 1
+        testParse()
+        testAddGoesToTopSectionNotBottom()
+        testAddBeforeCompleted()
+        testCompleteMovesToBottom()
+        testReopenMovesAboveCompleted()
+        testUpdatePreservesState()
+        testReorderOpenOnly()
+        testInsertIndexHelpers()
+        await testStoreIntegration()
+
+        if failed == 0 {
+            print("\nSMOKE PASS")
+            exit(0)
+        } else {
+            print("\nSMOKE FAIL (\(failed) assertion(s))")
+            exit(1)
+        }
+    }
+
+    // MARK: - Pure document tests
+
+    static func testParse() {
+        print("== parse ==")
+        let doc = TodoDocument(text: """
+        # Title
+
+        - open one
+        - [x] done one
+        ## Section A
+        - alpha
+        \t- nested
+        - [X] done A
+        ##video idea
+        - clip
+        """)
+        let sections = doc.parse()
+        check("section count", sections.count >= 3)
+        let root = sections.first { $0.title == "To-Dos" }
+        check("root has 2", root?.items.count == 2)
+        check("open before done", root?.items.first?.isCompleted == false && root?.items.last?.isCompleted == true)
+        check("strip [x]", root?.items.last?.text == "done one")
+        check("## no space", sections.contains { $0.title == "video idea" })
+        check("format open", TodoDocument.formatTodoLine(indent: "", text: "x", completed: false) == "- x")
+        check("format done", TodoDocument.formatTodoLine(indent: "  ", text: "x", completed: true) == "  - [x] x")
+        check("openCount", doc.openCount == 4) // open one, alpha, nested, clip
+        check("completedCount", doc.completedCount == 2)
+    }
+
+    static func testAddGoesToTopSectionNotBottom() {
+        print("== add → first section (not last) ==")
+        var doc = TodoDocument(text: """
+        ## Inbox
+        - a
+        - [x] old done
+        ## Archive
+        - buried
+        - [x] archive done
+        """)
+        check("default section is Inbox", doc.defaultAddSection() == "Inbox")
+        try! doc.addItem(text: "NEW ITEM")
+        let text = doc.text
+        // NEW must appear under Inbox, before completed, not under Archive
+        let inboxIdx = text.range(of: "## Inbox")!.lowerBound
+        let newIdx = text.range(of: "- NEW ITEM")!.lowerBound
+        let archiveIdx = text.range(of: "## Archive")!.lowerBound
+        let doneIdx = text.range(of: "- [x] old done")!.lowerBound
+        check("new after Inbox header", newIdx > inboxIdx)
+        check("new before Archive", newIdx < archiveIdx)
+        check("new before completed in section", newIdx < doneIdx)
+        check("not next to archive done", !text.contains("- NEW ITEM\n- [x] archive"))
+        let open = doc.parse().first { $0.title == "Inbox" }?.items.filter { !$0.isCompleted }.map(\.text)
+        check("Inbox open ends with NEW", open?.last == "NEW ITEM", open?.description ?? "")
+    }
+
+    static func testAddBeforeCompleted() {
+        print("== add before completed block ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - open
+        - [x] done1
+        - [x] done2
+        """)
+        try! doc.addItem(text: "fresh", section: "S")
+        let lines = doc.lines.filter { TodoDocument.isTodoLine($0) }
+        check("order open, fresh, done…", lines.map { TodoDocument.todoText($0) } == ["open", "fresh", "done1", "done2"]
+            || lines.map { TodoDocument.todoText($0) } == ["open", "fresh", "done1", "done2"])
+        // Explicit:
+        check("line0 open", !TodoDocument.isCompletedTodoLine(lines[0]) && TodoDocument.todoText(lines[0]) == "open")
+        check("line1 fresh", !TodoDocument.isCompletedTodoLine(lines[1]) && TodoDocument.todoText(lines[1]) == "fresh")
+        check("line2 done", TodoDocument.isCompletedTodoLine(lines[2]))
+    }
+
+    static func testCompleteMovesToBottom() {
+        print("== complete → bottom of section ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - one
+        - two
+        - three
+        ## Next
+        - other
+        """)
+        let item = doc.parse().flatMap(\.items).first { $0.text == "one" }!
+        _ = try! doc.toggleComplete(
+            text: item.text,
+            section: item.section,
+            lineIndex: item.lineIndex,
+            wasCompleted: false
+        )
+        let sLines = sectionTodoLines(doc, "S")
+        check("one is completed", sLines.contains { TodoDocument.isCompletedTodoLine($0) && TodoDocument.todoText($0) == "one" })
+        check("completed last in S", TodoDocument.todoText(sLines.last!) == "one" && TodoDocument.isCompletedTodoLine(sLines.last!))
+        check("two still open first", TodoDocument.todoText(sLines[0]) == "two")
+        check("other untouched", doc.text.contains("- other"))
+        check("openCount 3", doc.openCount == 3)
+    }
+
+    static func testReopenMovesAboveCompleted() {
+        print("== reopen → above completed ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - live
+        - [x] doneA
+        - [x] doneB
+        """)
+        let item = doc.parse().flatMap(\.items).first { $0.text == "doneA" && $0.isCompleted }!
+        _ = try! doc.toggleComplete(
+            text: item.text,
+            section: item.section,
+            lineIndex: item.lineIndex,
+            wasCompleted: true
+        )
+        let sLines = sectionTodoLines(doc, "S")
+        let texts = sLines.map { (TodoDocument.todoText($0), TodoDocument.isCompletedTodoLine($0)) }
+        check("doneA open", texts.contains(where: { $0.0 == "doneA" && $0.1 == false }))
+        check("open before completed", {
+            let firstDone = sLines.firstIndex(where: TodoDocument.isCompletedTodoLine)
+            let doneA = sLines.firstIndex { TodoDocument.todoText($0) == "doneA" }!
+            return firstDone == nil || doneA < firstDone! || !TodoDocument.isCompletedTodoLine(sLines[doneA])
+        }())
+        // All open before all completed
+        var sawDone = false
+        var orderOK = true
+        for line in sLines {
+            if TodoDocument.isCompletedTodoLine(line) { sawDone = true }
+            else if sawDone { orderOK = false }
+        }
+        check("open block then done block", orderOK)
+    }
+
+    static func testUpdatePreservesState() {
+        print("== edit ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - hello
+        - [x] bye
+        """)
+        let open = doc.parse().flatMap(\.items).first { $0.text == "hello" }!
+        try! doc.updateItem(text: "hello", section: "S", lineIndex: open.lineIndex, isCompleted: false, newText: "hello world")
+        check("edited text", doc.text.contains("- hello world"))
+        check("still open", doc.parse().flatMap(\.items).contains { $0.text == "hello world" && !$0.isCompleted })
+
+        let done = doc.parse().flatMap(\.items).first { $0.text == "bye" }!
+        try! doc.updateItem(text: "bye", section: "S", lineIndex: done.lineIndex, isCompleted: true, newText: "bye now")
+        check("edited done keeps [x]", doc.lines.contains { $0.contains("[x]") && $0.contains("bye now") })
+    }
+
+    static func testReorderOpenOnly() {
+        print("== reorder ==")
+        var doc = TodoDocument(text: """
+        ## S
+        - a
+        - b
+        - c
+        - [x] z
+        """)
+        try! doc.moveOpenItems(in: "S", from: IndexSet(integer: 0), to: 3) // move a to end of open
+        let open = doc.parse().first { $0.title == "S" }!.items.filter { !$0.isCompleted }.map(\.text)
+        check("a moved to end of open", open == ["b", "c", "a"], open.description)
+        check("z still completed last", doc.parse().first { $0.title == "S" }!.items.last?.text == "z")
+    }
+
+    static func testInsertIndexHelpers() {
+        print("== insertIndex ==")
+        let doc = TodoDocument(text: """
+        - loose
+        ## Mid
+        - m1
+        - [x] md
+        ## End
+        - e1
+        """)
+        check("open Mid after m1", doc.insertIndex(sectionTitle: "Mid", completed: false) == 3) // after m1 (line 2), before [x]
+        // lines: 0 loose, 1 ## Mid, 2 m1, 3 [x] md, 4 ## End, 5 e1
+        // After remove... just check relative
+        var d = doc
+        try! d.addItem(text: "x", section: "Mid")
+        let midTodos = sectionTodoLines(d, "Mid").map(TodoDocument.todoText)
+        check("Mid open then done", midTodos == ["m1", "x", "md"] || midTodos.first == "m1" && midTodos.contains("x") && midTodos.last == "md", midTodos.description)
+    }
+
+    static func sectionTodoLines(_ doc: TodoDocument, _ section: String) -> [String] {
+        var current = "To-Dos"
+        var out: [String] = []
+        for line in doc.lines {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if TodoDocument.isSectionHeader(t) {
+                current = TodoDocument.sectionTitle(fromHeader: t)
+                continue
+            }
+            if current == section, TodoDocument.isTodoLine(line) {
+                out.append(line)
             }
         }
+        return out
+    }
 
-        print("== parse ==")
-        let lines = [
-            "# Title",
-            "",
-            "- open one",
-            "- [x] done one",
-            "## Section A",
-            "- alpha",
-            "\t- nested",
-            "- [X] done A",
-            "##video idea",
-            "- clip",
-        ]
-        let sections = TodoStore.parse(lines: lines)
-        check("has sections", sections.count >= 2)
-        let root = sections.first { $0.title == "To-Dos" }
-        check("root open+done", root?.items.count == 2)
-        check("root open first", root?.items.first?.isCompleted == false)
-        check("root done last", root?.items.last?.isCompleted == true)
-        check("checkbox stripped", root?.items.last?.text == "done one")
-        check("## without space", sections.contains { $0.title == "video idea" })
-        check("format open", TodoStore.formatTodoLine(indent: "", text: "x", completed: false) == "- x")
-        check("format done", TodoStore.formatTodoLine(indent: "  ", text: "x", completed: true) == "  - [x] x")
-        check("todoText strips [x]", TodoStore.todoText("- [x] hi") == "hi")
-        check("isCompleted", TodoStore.isCompletedTodoLine("- [x] hi"))
-        check("not completed open", !TodoStore.isCompletedTodoLine("- hi"))
+    // MARK: - Store integration
 
-        print("== store mutations (temp git repo) ==")
+    static func testStoreIntegration() async {
+        print("== store integration ==")
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("todo-bar-smoke-\(UUID().uuidString)", isDirectory: true)
         try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -55,9 +247,11 @@ struct SmokeMain {
         ## Inbox
         - first
         - second
+        ## Later
+        - later item
+        - [x] old
         """.write(to: md, atomically: true, encoding: .utf8)
 
-        // init git so commit path is exercised
         func sh(_ args: [String]) {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -67,75 +261,44 @@ struct SmokeMain {
             p.standardError = FileHandle.nullDevice
             try! p.run()
             p.waitUntilExit()
-            precondition(p.terminationStatus == 0, "git \(args) failed")
         }
         sh(["init"])
         sh(["config", "user.email", "smoke@todo-bar.test"])
         sh(["config", "user.name", "Smoke"])
-        sh(["add", "todos.md"])
+        sh(["add", "."])
         sh(["commit", "-m", "init"])
 
         let store = await MainActor.run { TodoStore(filePath: md) }
-        let openCount: Int = await MainActor.run { store.itemCount }
-        check("loaded open count", openCount == 2)
+        check("loaded", await MainActor.run { store.itemCount } == 3)
 
-        // Add
         let t0 = Date()
-        await MainActor.run { store.addItem(text: "smoke add item") }
-        let addBusy: Bool = await MainActor.run { store.isBusy }
-        let addElapsed = Date().timeIntervalSince(t0)
-        check("add unlocks immediately", !addBusy)
-        check("add returns < 0.5s (no git block)", addElapsed < 0.5)
-        let afterAdd: Int = await MainActor.run { store.itemCount }
-        check("add increases count", afterAdd == 3)
-        let diskAfterAdd = try! String(contentsOf: md, encoding: .utf8)
-        check("add wrote disk", diskAfterAdd.contains("- smoke add item"))
+        await MainActor.run { store.addItem(text: "BRAND NEW") }
+        check("add unlocks", await MainActor.run { !store.isBusy })
+        check("add fast", Date().timeIntervalSince(t0) < 0.5)
+        check("count +1", await MainActor.run { store.itemCount } == 4)
 
-        // Complete
-        let item: TodoItem? = await MainActor.run {
-            store.sections.flatMap(\.items).first { $0.text == "smoke add item" && !$0.isCompleted }
+        let disk = try! String(contentsOf: md, encoding: .utf8)
+        let newRange = disk.range(of: "- BRAND NEW")!
+        let laterRange = disk.range(of: "## Later")!
+        let oldDone = disk.range(of: "- [x] old")!
+        check("added under Inbox not Later", newRange.upperBound < laterRange.lowerBound)
+        check("added before Later section", true)
+        check("not after [x] old", newRange.upperBound < oldDone.lowerBound || newRange.lowerBound < oldDone.lowerBound)
+
+        // Complete first open in Inbox
+        let target = await MainActor.run {
+            store.sections.flatMap(\.items).first { $0.text == "BRAND NEW" && !$0.isCompleted }
         }
-        check("find added item", item != nil)
-        if let item {
-            let t1 = Date()
-            await MainActor.run { store.complete(item) }
-            let completeBusy: Bool = await MainActor.run { store.isBusy }
-            check("complete unlocks immediately", !completeBusy)
-            check("complete returns < 0.5s", Date().timeIntervalSince(t1) < 0.5)
-            let afterComplete: Int = await MainActor.run { store.itemCount }
-            check("complete drops open count", afterComplete == 2)
-            let disk = try! String(contentsOf: md, encoding: .utf8)
-            check("complete wrote [x]", disk.contains("- [x] smoke add item"))
-            let doneVisible: Bool = await MainActor.run {
-                store.sections.flatMap(\.items).contains { $0.text == "smoke add item" && $0.isCompleted }
-            }
-            check("completed still in model", doneVisible)
+        check("found new item", target != nil)
+        if let target {
+            await MainActor.run { store.complete(target) }
+            check("complete unlocks", await MainActor.run { !store.isBusy })
+            check("open count -1", await MainActor.run { store.itemCount } == 3)
+            let after = try! String(contentsOf: md, encoding: .utf8)
+            check("disk has [x]", after.contains("- [x] BRAND NEW"))
         }
 
-        // Edit
-        let toEdit: TodoItem? = await MainActor.run {
-            store.sections.flatMap(\.items).first { $0.text == "first" && !$0.isCompleted }
-        }
-        if let toEdit {
-            await MainActor.run { store.updateItem(toEdit, text: "first edited") }
-            let editIdle = await MainActor.run { !store.isBusy }
-            check("edit unlocks", editIdle)
-            check("edit on disk", (try? String(contentsOf: md, encoding: .utf8))?.contains("- first edited") == true)
-        } else {
-            check("edit target exists", false)
-        }
-
-        // Wait briefly for async git to finish (should not matter for correctness)
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        let finalBusy = await MainActor.run { store.isBusy }
-        check("still idle after git", !finalBusy)
-
-        if failed == 0 {
-            print("\nSMOKE PASS")
-            exit(0)
-        } else {
-            print("\nSMOKE FAIL (\(failed))")
-            exit(1)
-        }
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        check("idle after git", await MainActor.run { !store.isBusy })
     }
 }

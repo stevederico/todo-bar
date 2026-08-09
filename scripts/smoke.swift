@@ -106,13 +106,12 @@ struct SmokeMain {
     }
 
     static func testCompleteMovesToBottom() {
-        print("== complete → absolute EOF (whole file) ==")
+        print("== complete → append line at EOF ==")
         var doc = TodoDocument(text: """
         # Title
         - top item
         ## THOUGHTS
         - thought
-        - [x] old mid-file done
         ## Next
         - other
         ## YC
@@ -125,27 +124,13 @@ struct SmokeMain {
             lineIndex: item.lineIndex,
             wasCompleted: false
         )
-        let full = doc.text
-        // Every section header except Completed must appear BEFORE ## Completed
-        let completedRange = full.range(of: "## Completed")!
-        for name in ["THOUGHTS", "Next", "YC"] {
-            let r = full.range(of: "## \(name)")!
-            check("## \(name) before Completed", r.lowerBound < completedRange.lowerBound)
-        }
-        check("last open still above Completed", full.range(of: "- last open")!.lowerBound < completedRange.lowerBound)
-        check("mid-file [x] swept to Completed", !full.contains("## THOUGHTS\n- thought") || true)
-        // Body after ## Completed is only completed todos
-        let after = String(full[completedRange.lowerBound...])
-        check("thought under Completed", after.contains("- [x] thought"))
-        check("old mid-file swept", after.contains("- [x] old mid-file done"))
-        check("no open after Completed", !after.split(separator: "\n").contains { line in
-            let s = String(line)
-            return TodoDocument.isTodoLine(s) && !TodoDocument.isCompletedTodoLine(s)
-        })
-        // Absolute last non-empty line is a completed todo
-        let last = doc.lines.last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }!
-        check("file ends with completed todo", TodoDocument.isCompletedTodoLine(last))
-        check("openCount", doc.openCount == 3) // top, other, last open
+        check("gone from mid-file", !doc.lines.dropLast().contains { TodoDocument.todoText($0) == "thought" })
+        check("last line is [x] thought", {
+            let last = doc.lines.last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }!
+            return TodoDocument.isCompletedTodoLine(last) && TodoDocument.todoText(last) == "thought"
+        }())
+        check("other sections untouched", doc.text.contains("## YC") && doc.text.contains("- last open"))
+        check("openCount", doc.openCount == 3)
     }
 
     static func testReopenMovesAboveCompleted() {
@@ -153,10 +138,16 @@ struct SmokeMain {
         var doc = TodoDocument(text: """
         ## S
         - live
-        ## Completed
         - [x] doneA
         - [x] doneB
         """)
+        // doneA is mid-list; complete already puts at end — reopen first done at end of file
+        doc.lines = [
+            "## S",
+            "- live",
+            "- [x] doneB",
+            "- [x] doneA",
+        ]
         let item = doc.parse().flatMap(\.items).first { $0.text == "doneA" && $0.isCompleted }!
         _ = try! doc.toggleComplete(
             text: item.text,
@@ -324,12 +315,11 @@ struct SmokeMain {
             check("open count -1", await MainActor.run { store.itemCount } == 3)
             let after = try! String(contentsOf: md, encoding: .utf8)
             check("disk has [x]", after.contains("- [x] BRAND NEW"))
-            check("## Completed at EOF", {
-                guard let cr = after.range(of: "## Completed") else { return false }
-                // Nothing after Completed except completed lines / blanks
-                let tail = after[cr.lowerBound...]
-                return tail.contains("- [x] BRAND NEW")
-                    && after.range(of: "## Later")!.lowerBound < cr.lowerBound
+            check("line is last on disk", {
+                let last = after.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map(String.init)
+                    .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                return last.map { TodoDocument.todoText($0) == "BRAND NEW" && TodoDocument.isCompletedTodoLine($0) } ?? false
             }())
         }
 

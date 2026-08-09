@@ -17,7 +17,7 @@
 - Right-click tab → Rename / Reveal / Remove
 - Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
 - **+** — new to-do is **prepended at the top** of the first section (pre-header `To-Dos` when present)
-- **Click** circle — mark complete (`- [x]`), move to `## Completed` at the **bottom of the file**; **Show Completed** to see / reopen
+- **Click** circle — mark complete (`- [x]`), move that line to the **end of the file**; **Show Completed** to see / reopen
 - **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
 - **Right-click** — Mark Complete / Reopen, Move, Edit, Copy, **Delete**
 - **Reorder** — ↑↓ on open items (or context menu)
@@ -44,7 +44,7 @@ Smoke / unit tests (pure `TodoDocument` + temp-repo store integration — requir
 ## Format
 
 - `- item` = open (shown)
-- `- [x] item` = completed (under `## Completed` at end of file; hidden until Show Completed)
+- `- [x] item` = completed (line moved to end of file; hidden until Show Completed)
 - `## Section` = group header
 
 ## Sample data

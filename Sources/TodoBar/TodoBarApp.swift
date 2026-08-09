@@ -10,29 +10,9 @@ struct TodoBarApp: App {
         MenuBarExtra {
             ContentView(model: model)
         } label: {
-            Label {
-                Text("todo-bar")
-            } icon: {
-                if let img = Self.statusBarImage() {
-                    Image(nsImage: img)
-                } else {
-                    Image(systemName: "checklist")
-                }
-            }
+            Image(systemName: "checklist")
         }
         .menuBarExtraStyle(.window)
-    }
-
-    /// Dashu head crop when bundled; SF Symbol fallback.
-    private static func statusBarImage() -> NSImage? {
-        for name in ["StatusBarIcon", "StatusBarIcon-full"] {
-            if let img = Bundle.main.image(forResource: name) {
-                img.isTemplate = false
-                img.size = NSSize(width: 18, height: 18)
-                return img
-            }
-        }
-        return nil
     }
 }
 

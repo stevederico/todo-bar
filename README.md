@@ -18,6 +18,7 @@
 - Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
 - **+** — new to-do is **prepended at the top** of the first section (pre-header `To-Dos` when present)
 - **Click** circle — mark complete (`- [x]`), move that line to the **end of the file**; **Show Completed** to see / reopen
+- Each add/edit/complete/delete **commits**, then **pushes** if the file's repo has an upstream
 - **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
 - **Right-click** — Mark Complete / Reopen, Move, Edit, Copy, **Delete**
 - **Reorder** — ↑↓ on open items (or context menu)

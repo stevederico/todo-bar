@@ -2,6 +2,13 @@ import Foundation
 import Combine
 import AppKit
 
+private let todoBarGitLock = NSLock()
+
+private final class GitOutputBox: @unchecked Sendable {
+    var stdout = Data()
+    var stderr = Data()
+}
+
 @MainActor
 final class TodoStore: ObservableObject {
     @Published private(set) var sections: [TodoSection] = []
@@ -236,18 +243,43 @@ final class TodoStore: ObservableObject {
         let message = commitMessage
         Task.detached(priority: .utility) { [weak self] in
             do {
-                try Self.gitCommitSync(message: message, files: paths)
-                await self?.finishCommit(token: token, status: status, committed: true)
+                let result = try Self.gitCommitSync(message: message, files: paths)
+                await self?.finishGit(
+                    token: token,
+                    status: status,
+                    outcome: result.pushed ? .pushed : .committed,
+                    error: result.pushError
+                )
             } catch {
-                await self?.finishCommit(token: token, status: status, committed: false)
+                await self?.finishGit(token: token, status: status, outcome: .failed, error: error.localizedDescription)
             }
         }
     }
 
-    private func finishCommit(token: Int, status: String, committed: Bool) {
+    private enum GitOutcome {
+        case failed
+        case committed
+        case pushed
+    }
+
+    private func finishGit(token: Int, status: String, outcome: GitOutcome, error: String?) {
         guard token == statusToken else { return }
-        if lastStatus == status || lastStatus == "\(status) · not committed" || lastStatus == "\(status) · committed" {
-            lastStatus = committed ? "\(status) · committed" : "\(status) · not committed"
+        let allowed: Set = [
+            status,
+            "\(status) · not committed",
+            "\(status) · committed",
+            "\(status) · pushed",
+        ]
+        if allowed.contains(lastStatus ?? "") {
+            switch outcome {
+            case .failed: lastStatus = "\(status) · not committed"
+            case .committed: lastStatus = "\(status) · committed"
+            case .pushed: lastStatus = "\(status) · pushed"
+            }
+        }
+        if let error {
+            lastError = error
+            print("todo-bar git: \(error)")
         }
     }
 
@@ -318,18 +350,31 @@ final class TodoStore: ObservableObject {
         return URL(fileURLWithPath: path)
     }
 
-    nonisolated private static func gitCommitSync(message: String, files: [URL]) throws {
-        guard let first = files.first else { return }
+    private struct GitSyncResult {
+        var pushed: Bool
+        var pushError: String?
+    }
+
+    /// Commit `files`, then `git push` when the branch has an upstream.
+    /// Throws only on commit failure. Push failure is returned, not thrown.
+    nonisolated private static func gitCommitSync(message: String, files: [URL]) throws -> GitSyncResult {
+        todoBarGitLock.lock()
+        defer { todoBarGitLock.unlock() }
+
+        guard let first = files.first else { return GitSyncResult(pushed: false, pushError: nil) }
         let dir = first.deletingLastPathComponent().path
         let rootOut = try runGit(arguments: ["-C", dir, "rev-parse", "--show-toplevel"])
-        let rootPath = rootOut.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rootPath = URL(fileURLWithPath: rootOut.trimmingCharacters(in: .whitespacesAndNewlines))
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
         guard !rootPath.isEmpty else {
             throw NSError(domain: "todo-bar.git", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not a git repository"])
         }
 
         let relPaths: [String] = try files.map { file in
-            let standardized = file.resolvingSymlinksInPath().path
-            guard standardized.hasPrefix(rootPath) else {
+            let standardized = file.resolvingSymlinksInPath().standardizedFileURL.path
+            let inside = standardized == rootPath || standardized.hasPrefix(rootPath + "/")
+            guard inside else {
                 throw NSError(
                     domain: "todo-bar.git",
                     code: 2,
@@ -343,8 +388,29 @@ final class TodoStore: ObservableObject {
 
         _ = try runGit(arguments: ["-C", rootPath, "add", "--"] + relPaths)
         let status = try runGit(arguments: ["-C", rootPath, "status", "--porcelain", "--"] + relPaths)
-        if status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+        if status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return GitSyncResult(pushed: false, pushError: nil)
+        }
         _ = try runGit(arguments: ["-C", rootPath, "commit", "-m", message])
+        return gitPushIfUpstream(rootPath: rootPath)
+    }
+
+    nonisolated private static func hasUpstream(rootPath: String) -> Bool {
+        (try? runGit(arguments: [
+            "-C", rootPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}",
+        ])) != nil
+    }
+
+    nonisolated private static func gitPushIfUpstream(rootPath: String) -> GitSyncResult {
+        guard hasUpstream(rootPath: rootPath) else {
+            return GitSyncResult(pushed: false, pushError: nil)
+        }
+        do {
+            _ = try runGit(arguments: ["-C", rootPath, "push"], timeoutSeconds: 20)
+            return GitSyncResult(pushed: true, pushError: nil)
+        } catch {
+            return GitSyncResult(pushed: false, pushError: error.localizedDescription)
+        }
     }
 
     @discardableResult
@@ -356,14 +422,30 @@ final class TodoStore: ObservableObject {
         env["GIT_EDITOR"] = "true"
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["GIT_PAGER"] = "cat"
+        env["GIT_LFS_SKIP_PUSH"] = "1"
+        env["GIT_LFS_SKIP_SMUDGE"] = "1"
         proc.environment = env
         let out = Pipe()
         let err = Pipe()
         proc.standardOutput = out
         proc.standardError = err
         proc.standardInput = FileHandle.nullDevice
-        try proc.run()
 
+        let io = DispatchGroup()
+        let box = GitOutputBox()
+        io.enter()
+        DispatchQueue.global(qos: .utility).async {
+            box.stdout = out.fileHandleForReading.readDataToEndOfFile()
+            io.leave()
+        }
+        io.enter()
+        DispatchQueue.global(qos: .utility).async {
+            box.stderr = err.fileHandleForReading.readDataToEndOfFile()
+            io.leave()
+        }
+
+        try proc.run()
         let group = DispatchGroup()
         group.enter()
         DispatchQueue.global(qos: .utility).async {
@@ -372,11 +454,13 @@ final class TodoStore: ObservableObject {
         }
         if group.wait(timeout: .now() + timeoutSeconds) == .timedOut {
             proc.terminate()
+            io.wait()
             throw NSError(domain: "todo-bar.git", code: 124, userInfo: [NSLocalizedDescriptionKey: "git timed out"])
         }
+        io.wait()
 
-        let stdout = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stdout = String(data: box.stdout, encoding: .utf8) ?? ""
+        let stderr = String(data: box.stderr, encoding: .utf8) ?? ""
         if proc.terminationStatus != 0 {
             let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(

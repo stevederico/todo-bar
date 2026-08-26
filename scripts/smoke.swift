@@ -26,6 +26,7 @@ struct SmokeMain {
         testReorderOpenOnly()
         testInsertIndexHelpers()
         await testStoreIntegration()
+        await testStoreGitPush()
 
         if failed == 0 {
             print("\nSMOKE PASS")
@@ -323,7 +324,85 @@ struct SmokeMain {
             }())
         }
 
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        let status = await waitGitStatus(store)
         check("idle after git", await MainActor.run { !store.isBusy })
+        check(
+            "no-remote commits, does not push",
+            isCommittedOnly(status),
+            status ?? "nil"
+        )
+        check("no git error", await MainActor.run { store.lastError == nil }, await MainActor.run { store.lastError ?? "" })
+    }
+
+    static func testStoreGitPush() async {
+        print("== store git push ==")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("todo-bar-smoke-push-\(UUID().uuidString)", isDirectory: true)
+        let work = tmp.appendingPathComponent("work", isDirectory: true)
+        let bare = tmp.appendingPathComponent("remote.git")
+        try! FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let md = work.appendingPathComponent("todos.md")
+        try! "# To-Do\n\n- existing\n".write(to: md, atomically: true, encoding: .utf8)
+
+        func git(_ dir: URL, _ args: [String], capture: Bool = false) -> (Int32, String) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = dir
+            let out = Pipe()
+            p.standardOutput = capture ? out : FileHandle.nullDevice
+            p.standardError = capture ? out : FileHandle.nullDevice
+            try! p.run()
+            p.waitUntilExit()
+            let text = capture
+                ? (String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+                : ""
+            return (p.terminationStatus, text)
+        }
+
+        _ = git(work, ["init", "-b", "master"])
+        _ = git(work, ["config", "user.email", "smoke@todo-bar.test"])
+        _ = git(work, ["config", "user.name", "Smoke"])
+        _ = git(work, ["add", "."])
+        _ = git(work, ["commit", "-m", "init"])
+        _ = git(tmp, ["init", "--bare", "-b", "master", bare.path])
+        _ = git(work, ["remote", "add", "origin", bare.path])
+        let pushedInit = git(work, ["push", "-u", "origin", "master"], capture: true)
+        check("upstream set", pushedInit.0 == 0, pushedInit.1)
+
+        let store = await MainActor.run { TodoStore(filePath: md) }
+        await MainActor.run { store.addItem(text: "PUSHED ITEM") }
+        let status = await waitGitStatus(store, timeout: 25)
+        check("status pushed", isPushed(status), status ?? "nil")
+        check("no push error", await MainActor.run { store.lastError == nil }, await MainActor.run { store.lastError ?? "" })
+
+        let log = git(bare, ["log", "-1", "--pretty=%s"], capture: true)
+        check("remote has commit", log.1.trimmingCharacters(in: .whitespacesAndNewlines) == "Add PUSHED ITEM", log.1)
+    }
+
+    static func waitGitStatus(_ store: TodoStore, timeout: TimeInterval = 3) async -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let status = await MainActor.run { store.lastStatus }
+            if isCommittedOnly(status) || isPushed(status) || isNotCommitted(status) {
+                return status
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return await MainActor.run { store.lastStatus }
+    }
+
+    static func isPushed(_ status: String?) -> Bool {
+        status?.hasSuffix(" · pushed") == true
+    }
+
+    static func isCommittedOnly(_ status: String?) -> Bool {
+        status?.hasSuffix(" · committed") == true
+    }
+
+    static func isNotCommitted(_ status: String?) -> Bool {
+        status?.hasSuffix(" · not committed") == true
     }
 }

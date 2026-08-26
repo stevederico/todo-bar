@@ -1,6 +1,11 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.5.0
+
+  Push after commit
+  Canonicalize git paths
+
 0.4.3
 
   Just append done line

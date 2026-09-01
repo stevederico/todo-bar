@@ -45,20 +45,35 @@ final class TodoBarModel: ObservableObject {
         selectedID = id
     }
 
-    func addSource(url: URL) {
-        let resolved = url.resolvingSymlinksInPath()
-        guard FileManager.default.fileExists(atPath: resolved.path) else { return }
-        // Already open → just select
-        if let existing = sources.first(where: {
-            URL(fileURLWithPath: $0.path).resolvingSymlinksInPath() == resolved
-        }) {
+    func addSource(path: String) {
+        let resolved = Self.expandPath(path)
+        guard !resolved.isEmpty else { return }
+        if let existing = sources.first(where: { $0.path == resolved }) {
             selectedID = existing.id
             return
         }
-        let source = TodoSource(url: resolved)
+        let url = URL(fileURLWithPath: resolved)
+        let source = TodoSource(url: url)
         sources.append(source)
         selectedID = source.id
         TodoSourceStore.save(sources: sources, selectedID: selectedID)
+    }
+
+    func addSource(url: URL) {
+        addSource(path: url.resolvingSymlinksInPath().path)
+    }
+
+    static func expandPath(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed == "~" {
+            return FileManager.default.homeDirectoryForCurrentUser.path
+        }
+        if trimmed.hasPrefix("~/") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            return (home as NSString).appendingPathComponent(String(trimmed.dropFirst(2)))
+        }
+        return (trimmed as NSString).standardizingPath
     }
 
     func removeSource(_ id: UUID) {
@@ -79,7 +94,7 @@ final class TodoBarModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// NSOpenPanel for another .md todo file.
+    /// NSOpenPanel for another .md todo file (also accepts typed paths via addSource(path:)).
     func pickAndAddSource() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true

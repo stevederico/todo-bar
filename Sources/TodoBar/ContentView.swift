@@ -1,10 +1,15 @@
 import SwiftUI
 import AppKit
+import Combine
 
 struct ContentView: View {
     @ObservedObject var model: TodoBarModel
     /// Must observe store directly — nested `model.store` alone does not refresh SwiftUI.
     @ObservedObject var store: TodoStore
+    var compact: Bool = true
+    var onOpenWindow: (() -> Void)? = nil
+    var onCloseWindow: (() -> Void)? = nil
+
     @State private var query = ""
     @State private var renameID: UUID?
     @State private var renameText = ""
@@ -12,6 +17,7 @@ struct ContentView: View {
     @State private var showAddField = false
     @State private var showCompleted = false
     @FocusState private var newTodoFocused: Bool
+    @State private var now = Date()
 
     private var isFiltering: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -62,11 +68,22 @@ struct ContentView: View {
                     .padding(.vertical, 6)
             }
             list
+                .frame(maxHeight: .infinity, alignment: .top)
             Divider()
             footer
         }
-        .frame(width: 460, height: 580)
-        .onAppear { store.syncFromRemote() }
+        .frame(
+            width: compact ? 460 : nil,
+            height: compact ? 620 : nil
+        )
+        .frame(minWidth: 400, minHeight: 480)
+        .onAppear {
+            store.syncFromRemote()
+            now = Date()
+        }
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { tick in
+            now = tick
+        }
         .sheet(item: $renameID) { id in
             RenameSheet(
                 title: renameText,
@@ -285,31 +302,48 @@ struct ContentView: View {
                 Button("Refresh") { store.syncFromRemote() }
                 Button("Open File") { store.openInEditor() }
                 Button("Reveal") { store.revealInFinder() }
+                if compact, let onOpenWindow {
+                    Button("Open Window") { onOpenWindow() }
+                        .help("Pop the list out into a normal window")
+                }
                 if completedCount > 0 {
                     Button(showCompleted ? "Hide Completed" : "Show Completed (\(completedCount))") {
                         showCompleted.toggle()
                     }
                 }
                 Spacer()
-                Button("Quit") { NSApp.terminate(nil) }
-                    .keyboardShortcut("q")
+                if compact {
+                    Button("Quit") { NSApp.terminate(nil) }
+                        .keyboardShortcut("q")
+                } else if let onCloseWindow {
+                    Button("Close Window") { onCloseWindow() }
+                        .keyboardShortcut("w", modifiers: [.command])
+                }
             }
             .buttonStyle(.borderless)
             .font(.caption)
 
-            Text(store.filePath.path)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(store.filePath.path)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                Text("\(lastUpdatedLabel) · v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
         .padding(12)
+    }
+
+    private var lastUpdatedLabel: String {
+        guard let updated = store.lastUpdatedAt else { return "Not loaded yet" }
+        let relative = updated.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        return "Updated \(relative)"
     }
 
     private func submitNewTodo() {

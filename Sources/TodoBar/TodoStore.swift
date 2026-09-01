@@ -24,6 +24,8 @@ final class TodoStore: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastStatus: String?
     @Published private(set) var lastLoadedAt: Date?
+    /// File modification time on disk (or after a successful pull reload).
+    @Published private(set) var lastUpdatedAt: Date?
     /// True only during the brief disk write — never during git.
     @Published private(set) var isBusy = false
 
@@ -110,12 +112,18 @@ final class TodoStore: ObservableObject {
             publish()
             lastError = nil
             lastLoadedAt = Date()
+            lastUpdatedAt = Self.fileModificationDate(at: filePath) ?? lastLoadedAt
         } catch {
             lastError = error.localizedDescription
             doc = TodoDocument()
             sections = []
             itemCount = 0
+            lastUpdatedAt = nil
         }
+    }
+
+    private static func fileModificationDate(at url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
     private func publish() {

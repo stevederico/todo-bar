@@ -8,7 +8,13 @@ struct TodoBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ContentView(model: model, store: model.store)
+            ContentView(
+                model: model,
+                store: model.store,
+                compact: true,
+                onOpenWindow: { appDelegate.openTodoWindow() }
+            )
+            .onAppear { appDelegate.attach(model: model) }
         } label: {
             Image(systemName: "checklist")
         }
@@ -16,46 +22,74 @@ struct TodoBarApp: App {
     }
 }
 
-/// Menu-bar only; `--demo-window` hosts ContentView in a normal NSWindow for screenshots.
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var isDemoWindow: Bool {
-        ProcessInfo.processInfo.arguments.contains("--demo-window")
+/// Menu-bar app with an optional normal window (same model + store as the panel).
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private weak var model: TodoBarModel?
+    private var todoWindow: NSWindow?
+
+    var isTodoWindowOpen: Bool {
+        todoWindow?.isVisible == true
     }
 
-    private var hostedWindow: NSWindow?
-    /// Retained so the demo window's ObservableObject stays alive.
-    private var demoModel: TodoBarModel?
+    func attach(model: TodoBarModel) {
+        self.model = model
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Stay accessory even for demo (regular + MenuBarExtra can fatal).
         NSApp.setActivationPolicy(.accessory)
-        guard isDemoWindow else { return }
+        guard ProcessInfo.processInfo.arguments.contains("--demo-window") else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.openDemoWindow()
+            self?.openTodoWindow()
         }
     }
 
-    @MainActor
-    private func openDemoWindow() {
-        guard hostedWindow == nil else { return }
-        let model = TodoBarModel()
-        demoModel = model
-        let hosting = NSHostingView(rootView: ContentView(model: model, store: model.store))
+    func openTodoWindow() {
+        guard let model else { return }
+        if let todoWindow {
+            todoWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        NSApp.setActivationPolicy(.regular)
+
+        let content = ContentView(
+            model: model,
+            store: model.store,
+            compact: false,
+            onCloseWindow: { [weak self] in self?.closeTodoWindow() }
+        )
+        let hosting = NSHostingView(rootView: content)
+        hosting.autoresizingMask = [.width, .height]
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 580),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "todo-bar"
         window.contentView = hosting
-        window.setContentSize(NSSize(width: 460, height: 580))
+        window.minSize = NSSize(width: 400, height: 480)
+        window.setContentSize(NSSize(width: 520, height: 640))
         window.center()
         window.isReleasedWhenClosed = false
-        window.level = .floating
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        hostedWindow = window
+        todoWindow = window
+        model.store.syncFromRemote()
+    }
+
+    func closeTodoWindow() {
+        todoWindow?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === todoWindow else { return }
+        todoWindow = nil
+        NSApp.setActivationPolicy(.accessory)
+        model?.store.syncFromRemote()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

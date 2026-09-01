@@ -24,6 +24,8 @@
 - **Right-click** — Mark Complete / Reopen, Move, Edit, Copy, **Delete**
 - **Reorder** — ↑↓ on open items (or context menu)
 - Live-reloads when the active file changes; tabs persist in UserDefaults
+- **Open Window** — pop the panel into a normal resizable window (same tabs + data)
+- Footer shows when the active file was last updated on disk
 
 <p align="center">
   <img src="docs/screenshots/panel-books.png" alt="todo-bar books tab with sample reading list" width="400" />

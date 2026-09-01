@@ -1,6 +1,15 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.7.0
+
+  Match todo-omarchy parity
+  Always write CHANGELOG.md on complete
+  Fetch and fast-forward git sync
+  Count on active tab, + path tab
+  Icon footer, drag reorder
+  Hide To-Dos header, striped rows
+
 0.6.0
 
   Pull on open

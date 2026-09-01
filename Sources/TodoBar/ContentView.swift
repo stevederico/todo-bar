@@ -1,10 +1,8 @@
 import SwiftUI
 import AppKit
-import Combine
 
 struct ContentView: View {
     @ObservedObject var model: TodoBarModel
-    /// Must observe store directly — nested `model.store` alone does not refresh SwiftUI.
     @ObservedObject var store: TodoStore
     var compact: Bool = true
     var onOpenWindow: (() -> Void)? = nil
@@ -14,10 +12,14 @@ struct ContentView: View {
     @State private var renameID: UUID?
     @State private var renameText = ""
     @State private var newTodoText = ""
-    @State private var showAddField = false
+    @State private var showAddField = true
+    @State private var showAddList = false
+    @State private var addListPath = ""
+    @State private var showFilter = false
     @State private var showCompleted = false
     @FocusState private var newTodoFocused: Bool
-    @State private var now = Date()
+    @FocusState private var addListFocused: Bool
+    @FocusState private var filterFocused: Bool
 
     private var isFiltering: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -28,7 +30,7 @@ struct ContentView: View {
     }
 
     private var filtered: [TodoSection] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return store.sections.compactMap { section in
             var items = section.items.filter { showCompleted || !$0.isCompleted }
             if !q.isEmpty {
@@ -42,6 +44,10 @@ struct ContentView: View {
         }
     }
 
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -49,7 +55,11 @@ struct ContentView: View {
                 addField
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            if showAddList {
+                addListField
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
             }
             Divider()
             if let err = store.lastError {
@@ -77,13 +87,8 @@ struct ContentView: View {
             height: compact ? 620 : nil
         )
         .frame(minWidth: 400, minHeight: 480)
-        .onAppear {
-            store.syncFromRemote()
-            now = Date()
-        }
-        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { tick in
-            now = tick
-        }
+        .background(keyboardShortcuts)
+        .onAppear { store.syncFromRemote() }
         .sheet(item: $renameID) { id in
             RenameSheet(
                 title: renameText,
@@ -96,6 +101,20 @@ struct ContentView: View {
         }
     }
 
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("") { focusAdd() }.keyboardShortcut("n", modifiers: [])
+            Button("") { focusFilter() }.keyboardShortcut("/", modifiers: [])
+            Button("") { store.syncFromRemote() }.keyboardShortcut("r", modifiers: [])
+            if compact, onOpenWindow != nil {
+                Button("") { onOpenWindow?() }.keyboardShortcut("w", modifiers: [])
+            }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
+
     private var topBar: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -103,34 +122,14 @@ struct ContentView: View {
                     ForEach(model.sources) { source in
                         tabChip(source)
                     }
+                    addListTab
                 }
             }
-
-            Text("\(store.itemCount)")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.quaternary, in: Capsule())
-
-            Button {
-                model.pickAndAddSource()
-            } label: {
-                Text("Add List")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .help("Add Another Todo File")
 
             Button {
                 withAnimation(.easeOut(duration: 0.15)) {
                     showAddField.toggle()
+                    if showAddField { showAddList = false }
                 }
                 if showAddField {
                     DispatchQueue.main.async { newTodoFocused = true }
@@ -155,10 +154,43 @@ struct ContentView: View {
                     )
             }
             .buttonStyle(.plain)
-            .help(showAddField ? "Hide New To-Do" : "Add To-Do")
+            .help(showAddField ? "Hide New To-Do (n)" : "Add To-Do (n)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private func tabLabel(_ source: TodoSource) -> String {
+        let title = TodoSource.tabTitle(source.title)
+        if source.id == model.selectedID {
+            return "\(title) \(store.itemCount)"
+        }
+        return title
+    }
+
+    private var addListTab: some View {
+        Button {
+            showAddList.toggle()
+            showAddField = false
+            if showAddList {
+                DispatchQueue.main.async { addListFocused = true }
+            } else {
+                addListPath = ""
+                addListFocused = false
+            }
+        } label: {
+            Text("+")
+                .font(.caption.weight(showAddList ? .semibold : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(showAddList ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(showAddList ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Add another markdown todo file")
     }
 
     private var addField: some View {
@@ -175,11 +207,9 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
             }
             Button {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    showAddField = false
-                    newTodoText = ""
-                    newTodoFocused = false
-                }
+                showAddField = false
+                newTodoText = ""
+                newTodoFocused = false
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
@@ -192,13 +222,36 @@ struct ContentView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private var addListField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.badge.plus")
+                .foregroundStyle(.secondary)
+            TextField("Path to .md — e.g. ~/books.md", text: $addListPath)
+                .textFieldStyle(.plain)
+                .focused($addListFocused)
+                .onSubmit { submitAddList() }
+            Button {
+                showAddList = false
+                addListPath = ""
+                addListFocused = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private func tabChip(_ source: TodoSource) -> some View {
         let selected = source.id == model.selectedID
         return Button {
             query = ""
             model.select(source.id)
         } label: {
-            Text(source.title)
+            Text(tabLabel(source))
                 .font(.caption.weight(selected ? .semibold : .regular))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
@@ -215,7 +268,7 @@ struct ContentView: View {
                 renameID = source.id
             }
             Button("Reveal In Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([source.url])
+                NSWorkspace.shared.activateFileViewerSelecting([source.url.deletingLastPathComponent()])
             }
             if model.sources.count > 1 {
                 Divider()
@@ -227,7 +280,6 @@ struct ContentView: View {
         .help(source.path)
     }
 
-    /// ScrollView (not List) — List+onMove steals checkbox taps on macOS.
     private var list: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -235,39 +287,41 @@ struct ContentView: View {
                     let openItems = section.items.filter { !$0.isCompleted }
                     let doneItems = section.items.filter(\.isCompleted)
 
-                    Text(section.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 12)
-                        .padding(.bottom, 4)
+                    if section.title != "To-Dos" {
+                        Text(section.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 12)
+                            .padding(.bottom, 4)
+                    }
 
                     ForEach(Array(openItems.enumerated()), id: \.element.id) { index, item in
                         TodoRow(
                             item: item,
-                            canMoveUp: index > 0 && !isFiltering,
-                            canMoveDown: index < openItems.count - 1 && !isFiltering,
+                            striped: index % 2 == 1,
+                            draggable: !isFiltering && !store.isBusy,
                             onComplete: { store.complete(item) },
                             onSave: { store.updateItem(item, text: $0) },
                             onDelete: { store.deleteItem(item) },
-                            onMoveUp: { store.moveOpenItem(item, direction: -1) },
-                            onMoveDown: { store.moveOpenItem(item, direction: 1) }
+                            onDrop: { draggedID in
+                                reorderOpen(item: item, draggedID: draggedID, openItems: openItems)
+                            }
                         )
                         .padding(.horizontal, 8)
                     }
 
                     if showCompleted {
-                        ForEach(doneItems) { item in
+                        ForEach(Array(doneItems.enumerated()), id: \.element.id) { index, item in
                             TodoRow(
                                 item: item,
-                                canMoveUp: false,
-                                canMoveDown: false,
+                                striped: (openItems.count + index) % 2 == 1,
+                                draggable: false,
                                 onComplete: { store.complete(item) },
                                 onSave: { store.updateItem(item, text: $0) },
                                 onDelete: { store.deleteItem(item) },
-                                onMoveUp: {},
-                                onMoveDown: {}
+                                onDrop: { _ in false }
                             )
                             .padding(.horizontal, 8)
                         }
@@ -287,63 +341,108 @@ struct ContentView: View {
         .id(model.selectedID)
     }
 
+    private func reorderOpen(item: TodoItem, draggedID: String, openItems: [TodoItem]) -> Bool {
+        guard !item.isCompleted, !isFiltering else { return false }
+        guard let from = openItems.firstIndex(where: { $0.id == draggedID }),
+              let to = openItems.firstIndex(where: { $0.id == item.id }),
+              from != to else { return false }
+        store.moveItems(in: item.section, from: IndexSet(integer: from), to: to)
+        return true
+    }
+
     private var footer: some View {
         VStack(spacing: 8) {
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Filter", text: $query)
-                    .textFieldStyle(.plain)
+            if showFilter {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter", text: $query)
+                        .textFieldStyle(.plain)
+                        .focused($filterFocused)
+                    Button {
+                        showFilter = false
+                        query = ""
+                        filterFocused = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             }
-            .padding(8)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
 
             HStack(spacing: 8) {
-                Button("Refresh") { store.syncFromRemote() }
-                Button("Open File") { store.openInEditor() }
-                Button("Reveal") { store.revealInFinder() }
-                if compact, let onOpenWindow {
-                    Button("Open Window") { onOpenWindow() }
-                        .help("Pop the list out into a normal window")
+                FooterIconButton(
+                    systemName: "magnifyingglass",
+                    selected: showFilter || isFiltering,
+                    help: showFilter ? "Hide filter" : "Filter (/)"
+                ) {
+                    if showFilter && !isFiltering {
+                        showFilter = false
+                        filterFocused = false
+                    } else {
+                        focusFilter()
+                    }
+                }
+                FooterIconButton(systemName: "arrow.clockwise", help: "Refresh (r)") {
+                    store.syncFromRemote()
+                }
+                FooterIconButton(systemName: "doc.text", help: "Open file") {
+                    store.openInEditor()
+                }
+                if compact, onOpenWindow != nil {
+                    FooterIconButton(systemName: "macwindow", help: "Open window (w)") {
+                        onOpenWindow?()
+                    }
                 }
                 if completedCount > 0 {
-                    Button(showCompleted ? "Hide Completed" : "Show Completed (\(completedCount))") {
+                    FooterIconButton(
+                        systemName: showCompleted ? "eye.slash" : "eye",
+                        selected: showCompleted,
+                        help: showCompleted
+                            ? "Hide completed (\(completedCount))"
+                            : "Show completed (\(completedCount))"
+                    ) {
                         showCompleted.toggle()
                     }
                 }
                 Spacer()
+                Text("v\(appVersion)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(height: 28)
+
+            HStack {
                 if compact {
                     Button("Quit") { NSApp.terminate(nil) }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
                         .keyboardShortcut("q")
                 } else if let onCloseWindow {
                     Button("Close Window") { onCloseWindow() }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
                         .keyboardShortcut("w", modifiers: [.command])
                 }
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(store.filePath.path)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text("\(lastUpdatedLabel) · v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                Spacer()
             }
         }
         .padding(12)
     }
 
-    private var lastUpdatedLabel: String {
-        guard let updated = store.lastUpdatedAt else { return "Not loaded yet" }
-        let relative = updated.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
-        return "Updated \(relative)"
+    private func focusAdd() {
+        showAddField = true
+        showAddList = false
+        DispatchQueue.main.async { newTodoFocused = true }
+    }
+
+    private func focusFilter() {
+        showFilter = true
+        DispatchQueue.main.async { filterFocused = true }
     }
 
     private func submitNewTodo() {
@@ -352,6 +451,42 @@ struct ContentView: View {
         newTodoText = ""
         store.addItem(text: text)
         newTodoFocused = true
+    }
+
+    private func submitAddList() {
+        let path = addListPath
+        guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        addListPath = ""
+        showAddList = false
+        addListFocused = false
+        model.addSource(path: path)
+    }
+}
+
+// MARK: - Footer icon
+
+private struct FooterIconButton: View {
+    let systemName: String
+    var selected = false
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 28, height: 28)
+                .background(
+                    selected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(selected ? Color.accentColor.opacity(0.4) : Color.clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 
@@ -389,13 +524,12 @@ extension UUID: @retroactive Identifiable {
 
 private struct TodoRow: View {
     let item: TodoItem
-    let canMoveUp: Bool
-    let canMoveDown: Bool
+    let striped: Bool
+    let draggable: Bool
     let onComplete: () -> Void
     let onSave: (String) -> Void
     let onDelete: () -> Void
-    let onMoveUp: () -> Void
-    let onMoveDown: () -> Void
+    let onDrop: (String) -> Bool
 
     @State private var expanded = false
     @State private var editing = false
@@ -404,11 +538,10 @@ private struct TodoRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            // Large hit target; plain button + high-priority tap (MenuBarExtra is flaky).
-            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 18, weight: .regular))
+            Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square")
+                .font(.system(size: 16, weight: .regular))
                 .foregroundStyle(item.isCompleted ? Color.accentColor : .secondary)
-                .frame(width: 36, height: 32)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
                 .onTapGesture { onComplete() }
                 .help(item.isCompleted ? "Reopen" : "Mark Complete")
@@ -436,40 +569,14 @@ private struct TodoRow: View {
                     }
                     .help(expanded ? "Double-Click To Edit" : "Click To Expand · Double-Click To Edit")
             }
-
-            if !item.isCompleted {
-                HStack(spacing: 2) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                        .opacity(canMoveUp ? 0.6 : 0.15)
-                        .onTapGesture { if canMoveUp { onMoveUp() } }
-                        .help("Move Up")
-
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                        .opacity(canMoveDown ? 0.6 : 0.15)
-                        .onTapGesture { if canMoveDown { onMoveDown() } }
-                        .help("Move Down")
-                }
-            }
         }
         .padding(.leading, CGFloat(min(item.indent, 8)) * 4)
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
-        .background(Color.primary.opacity(0.02), in: RoundedRectangle(cornerRadius: 6))
+        .background(striped ? Color.primary.opacity(0.04) : Color.primary.opacity(0.02), in: RoundedRectangle(cornerRadius: 6))
         .opacity(item.isCompleted ? 0.75 : 1)
         .contextMenu {
             Button(item.isCompleted ? "Reopen" : "Mark Complete") { onComplete() }
-            if !item.isCompleted {
-                Button("Move Up") { onMoveUp() }
-                    .disabled(!canMoveUp)
-                Button("Move Down") { onMoveDown() }
-                    .disabled(!canMoveDown)
-            }
             Button("Edit…") { beginEdit() }
             Button("Copy") {
                 NSPasteboard.general.clearContents()
@@ -481,6 +588,14 @@ private struct TodoRow: View {
         .onChange(of: item.text) { _ in
             if editing { cancelEdit() }
             expanded = false
+        }
+        .if(draggable && !item.isCompleted) { view in
+            view
+                .onDrag { NSItemProvider(object: item.id as NSString) }
+                .dropDestination(for: String.self) { items, _ in
+                    guard let dragged = items.first else { return false }
+                    return onDrop(dragged)
+                }
         }
     }
 
@@ -502,5 +617,16 @@ private struct TodoRow: View {
         editing = false
         fieldFocused = false
         draft = item.text
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }

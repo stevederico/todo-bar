@@ -24,6 +24,21 @@ struct TodoSource: Identifiable, Codable, Hashable {
         self.title = title ?? Self.defaultTitle(for: resolved)
     }
 
+    /// Capitalize each word for tab labels (`books` → `Books`, `my list` → `My List`).
+    static func tabTitle(_ title: String) -> String {
+        let raw = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "" }
+        return raw.split(whereSeparator: \.isWhitespace)
+            .map { word in
+                var s = String(word)
+                if let first = s.first {
+                    s.replaceSubrange(s.startIndex...s.startIndex, with: String(first).uppercased())
+                }
+                return s
+            }
+            .joined(separator: " ")
+    }
+
     /// `Todos/todos.md` → "Todos"; `marketing/todo.md` → "marketing"; `books.md` → "books".
     static func defaultTitle(for url: URL) -> String {
         let base = url.deletingPathExtension().lastPathComponent
@@ -51,12 +66,7 @@ enum TodoSourceStore {
             save(sources: sources)
         }
 
-        // Drop paths that no longer exist, but keep at least one entry if possible
-        let existing = sources.filter { FileManager.default.fileExists(atPath: $0.path) }
-        if !existing.isEmpty {
-            sources = existing
-        }
-
+        // Keep all registered tabs, including paths that do not exist yet.
         let selected: UUID
         if let raw = defaults.string(forKey: selectedKey),
            let id = UUID(uuidString: raw),

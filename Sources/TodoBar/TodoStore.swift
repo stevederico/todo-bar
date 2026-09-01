@@ -13,6 +13,8 @@ private enum PullOutcome: Sendable {
     case skipped
     case upToDate
     case pulled
+    case diverged
+    case blocked
     case failed(String)
 }
 
@@ -26,6 +28,7 @@ final class TodoStore: ObservableObject {
     @Published private(set) var lastLoadedAt: Date?
     /// File modification time on disk (or after a successful pull reload).
     @Published private(set) var lastUpdatedAt: Date?
+    @Published private(set) var fileMissing = false
     /// True only during the brief disk write — never during git.
     @Published private(set) var isBusy = false
 
@@ -90,7 +93,7 @@ final class TodoStore: ObservableObject {
         let token = pullToken
         let path = filePath
         // Don't clobber an in-flight mutation status ("Added", "Completed · pushed", …).
-        if lastStatus == nil || lastStatus == "Up to date" || lastStatus == "Pulled" || lastStatus == "Pull failed" || lastStatus == "Syncing…" {
+        if lastStatus == nil || isPullStatus(lastStatus) || lastStatus == "Syncing…" {
             lastStatus = "Syncing…"
         }
         Task.detached(priority: .utility) { [weak self] in
@@ -102,14 +105,24 @@ final class TodoStore: ObservableObject {
     // MARK: - Load
 
     func reload() {
+        guard FileManager.default.fileExists(atPath: filePath.path) else {
+            doc = TodoDocument()
+            publish()
+            fileMissing = true
+            lastError = "No todo file yet — add an item to create \(filePath.path)"
+            lastUpdatedAt = nil
+            return
+        }
         do {
             let data = try Data(contentsOf: filePath)
             guard let text = String(data: data, encoding: .utf8) else {
                 lastError = "Could not decode file as UTF-8"
+                fileMissing = false
                 return
             }
             doc = TodoDocument(text: text)
             publish()
+            fileMissing = false
             lastError = nil
             lastLoadedAt = Date()
             lastUpdatedAt = Self.fileModificationDate(at: filePath) ?? lastLoadedAt
@@ -118,6 +131,7 @@ final class TodoStore: ObservableObject {
             doc = TodoDocument()
             sections = []
             itemCount = 0
+            fileMissing = false
             lastUpdatedAt = nil
         }
     }
@@ -155,8 +169,8 @@ final class TodoStore: ObservableObject {
                 wasCompleted: item.isCompleted
             )
             var files = [filePath]
-            if nowDone, let cl = try? appendChangelogIfPresent(completedText: item.text) {
-                files.append(cl)
+            if nowDone {
+                files.append(try appendChangelog(completedText: item.text))
             }
             try save(
                 status: nowDone ? "Completed" : "Reopened",
@@ -265,8 +279,11 @@ final class TodoStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         suppressWatch(for: 1.5)
+        let parent = filePath.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try doc.text.write(to: filePath, atomically: true, encoding: .utf8)
         publish()
+        fileMissing = false
         lastLoadedAt = Date()
         lastStatus = status
 
@@ -316,64 +333,61 @@ final class TodoStore: ObservableObject {
         }
     }
 
+    private func isPullStatus(_ text: String?) -> Bool {
+        guard let text else { return false }
+        return text == "Updated from git"
+            || text == "Remote has updates (kept local changes)"
+            || text == "Git diverged from remote — pull skipped"
+    }
+
     private func finishPull(token: Int, result: PullOutcome) {
         guard token == pullToken else { return }
         let canReplaceStatus = lastStatus == nil
             || lastStatus == "Syncing…"
-            || lastStatus == "Up to date"
-            || lastStatus == "Pulled"
-            || lastStatus == "Pull failed"
+            || isPullStatus(lastStatus)
         switch result {
         case .skipped:
             if lastStatus == "Syncing…" {
                 lastStatus = nil
             }
         case .upToDate:
-            if canReplaceStatus {
-                lastStatus = "Up to date"
+            if lastStatus == "Syncing…" {
+                lastStatus = nil
             }
         case .pulled:
             suppressWatch(for: 1.5)
             reload()
-            if canReplaceStatus {
-                lastStatus = "Pulled"
-            }
+            lastStatus = "Updated from git"
             lastError = nil
+        case .diverged:
+            lastError = "Git diverged from remote — pull skipped"
+        case .blocked:
+            if canReplaceStatus {
+                lastStatus = "Remote has updates (kept local changes)"
+            }
         case .failed(let message):
             lastError = message
-            print("todo-bar git pull: \(message)")
-            if canReplaceStatus {
-                lastStatus = "Pull failed"
-            }
+            print("todo-bar git fetch: \(message)")
         }
     }
 
     // MARK: - Changelog
 
     @discardableResult
-    private func appendChangelogIfPresent(completedText: String) throws -> URL? {
-        guard let changelogURL = resolveExistingChangelog() else { return nil }
+    private func appendChangelog(completedText: String) throws -> URL {
+        let changelogURL = filePath.deletingLastPathComponent().appendingPathComponent("CHANGELOG.md")
         suppressWatch(for: 1.5)
         let today = Self.todayHeader()
         let entry = "  \(completedText)"
-        let existing = try String(contentsOf: changelogURL, encoding: .utf8)
+        let existing: String
+        if FileManager.default.fileExists(atPath: changelogURL.path) {
+            existing = try String(contentsOf: changelogURL, encoding: .utf8)
+        } else {
+            existing = ""
+        }
         let updated = Self.insertChangelogEntry(into: existing, dateHeader: today, entryLine: entry)
         try updated.write(to: changelogURL, atomically: true, encoding: .utf8)
         return changelogURL
-    }
-
-    private func resolveExistingChangelog() -> URL? {
-        let beside = filePath.deletingLastPathComponent().appendingPathComponent("CHANGELOG.md")
-        if FileManager.default.fileExists(atPath: beside.path) {
-            return beside
-        }
-        if let root = try? gitRoot() {
-            let atRoot = root.appendingPathComponent("CHANGELOG.md")
-            if FileManager.default.fileExists(atPath: atRoot.path) {
-                return atRoot
-            }
-        }
-        return nil
     }
 
     static func todayHeader(date: Date = Date(), calendar: Calendar = .current) -> String {
@@ -436,7 +450,8 @@ final class TodoStore: ObservableObject {
             throw NSError(domain: "todo-bar.git", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not a git repository"])
         }
 
-        let relPaths: [String] = try files.map { file in
+        let relPaths: [String] = try files.compactMap { file in
+            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
             let standardized = file.resolvingSymlinksInPath().standardizedFileURL.path
             let inside = standardized == rootPath || standardized.hasPrefix(rootPath + "/")
             guard inside else {
@@ -449,6 +464,9 @@ final class TodoStore: ObservableObject {
             var rel = String(standardized.dropFirst(rootPath.count))
             if rel.hasPrefix("/") { rel = String(rel.dropFirst()) }
             return rel.isEmpty ? file.lastPathComponent : rel
+        }
+        guard !relPaths.isEmpty else {
+            return GitSyncResult(pushed: false, pushError: nil)
         }
 
         _ = try runGit(arguments: ["-C", rootPath, "add", "--"] + relPaths)
@@ -478,7 +496,7 @@ final class TodoStore: ObservableObject {
         }
     }
 
-    /// Pull with rebase + autostash when upstream exists. Never throws — failures are returned.
+    /// Fetch upstream, fast-forward when behind, push when ahead. Never merges diverged histories.
     nonisolated private static func gitPullSync(file: URL) -> PullOutcome {
         todoBarGitLock.lock()
         defer { todoBarGitLock.unlock() }
@@ -497,18 +515,43 @@ final class TodoStore: ObservableObject {
         guard hasUpstream(rootPath: rootPath) else { return .skipped }
 
         do {
-            let out = try runGit(
-                arguments: ["-C", rootPath, "pull", "--rebase", "--autostash"],
-                timeoutSeconds: 20
-            )
-            let combined = out.lowercased()
-            if combined.contains("already up to date") {
-                return .upToDate
-            }
-            return .pulled
+            _ = try runGit(arguments: ["-C", rootPath, "fetch", "--quiet"], timeoutSeconds: 20)
+        } catch {
+            return .skipped
+        }
+
+        let local: String
+        let remote: String
+        do {
+            local = try runGit(arguments: ["-C", rootPath, "rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            remote = try runGit(arguments: ["-C", rootPath, "rev-parse", "@{u}"]).trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return .failed(error.localizedDescription)
         }
+        guard !local.isEmpty, !remote.isEmpty else { return .skipped }
+        if local == remote { return .upToDate }
+
+        if isAncestor(rootPath: rootPath, ancestor: remote, descendant: local) {
+            _ = gitPushIfUpstream(rootPath: rootPath)
+            return .upToDate
+        }
+        if !isAncestor(rootPath: rootPath, ancestor: local, descendant: remote) {
+            return .diverged
+        }
+
+        do {
+            _ = try runGit(arguments: ["-C", rootPath, "merge", "--ff-only", "@{u}"], timeoutSeconds: 8)
+            return .pulled
+        } catch {
+            return .blocked
+        }
+    }
+
+    nonisolated private static func isAncestor(rootPath: String, ancestor: String, descendant: String) -> Bool {
+        let status = try? runGit(arguments: [
+            "-C", rootPath, "merge-base", "--is-ancestor", ancestor, descendant,
+        ])
+        return status != nil
     }
 
     @discardableResult
@@ -530,32 +573,22 @@ final class TodoStore: ObservableObject {
         proc.standardError = err
         proc.standardInput = FileHandle.nullDevice
 
-        let io = DispatchGroup()
+        let group = DispatchGroup()
         let box = GitOutputBox()
-        io.enter()
+        group.enter()
         DispatchQueue.global(qos: .utility).async {
             box.stdout = out.fileHandleForReading.readDataToEndOfFile()
-            io.leave()
-        }
-        io.enter()
-        DispatchQueue.global(qos: .utility).async {
             box.stderr = err.fileHandleForReading.readDataToEndOfFile()
-            io.leave()
+            group.leave()
         }
 
         try proc.run()
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global(qos: .utility).async {
-            proc.waitUntilExit()
-            group.leave()
-        }
         if group.wait(timeout: .now() + timeoutSeconds) == .timedOut {
             proc.terminate()
-            io.wait()
+            _ = group.wait(timeout: .now() + 1)
             throw NSError(domain: "todo-bar.git", code: 124, userInfo: [NSLocalizedDescriptionKey: "git timed out"])
         }
-        io.wait()
+        proc.waitUntilExit()
 
         let stdout = String(data: box.stdout, encoding: .utf8) ?? ""
         let stderr = String(data: box.stderr, encoding: .utf8) ?? ""

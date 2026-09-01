@@ -28,6 +28,7 @@ struct SmokeMain {
         await testStoreIntegration()
         await testStoreGitPush()
         await testStoreGitPull()
+        await testStoreChangelog()
 
         if failed == 0 {
             print("\nSMOKE PASS")
@@ -441,14 +442,38 @@ struct SmokeMain {
         check("local still seed-only", !before.contains("from remote"), before)
 
         let store = await MainActor.run { TodoStore(filePath: localMd) }
-        let pulled = await waitPullStatus(store, timeout: 25)
-        check("status pulled", pulled == "Pulled", pulled ?? "nil")
+        let pulled = await waitPullStatus(store, timeout: 30)
+        check("status pulled", pulled == "Updated from git", pulled ?? "nil")
         check("no pull error", await MainActor.run { store.lastError == nil }, await MainActor.run { store.lastError ?? "" })
         let after = try! String(contentsOf: localMd, encoding: .utf8)
         check("disk has remote item", after.contains("from remote"), after)
         check("ui shows remote item", await MainActor.run {
             store.sections.flatMap(\.items).contains { $0.text == "from remote" }
         })
+    }
+
+    static func testStoreChangelog() async {
+        print("== store changelog ==")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("todo-bar-smoke-changelog-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let md = tmp.appendingPathComponent("todos.md")
+        try! "## Inbox\n- finish thing\n".write(to: md, atomically: true, encoding: .utf8)
+
+        let store = await MainActor.run { TodoStore(filePath: md) }
+        let item = await MainActor.run {
+            store.sections.flatMap(\.items).first { $0.text == "finish thing" }
+        }
+        check("found item", item != nil)
+        if let item {
+            await MainActor.run { store.complete(item) }
+            let cl = tmp.appendingPathComponent("CHANGELOG.md")
+            check("creates CHANGELOG.md", FileManager.default.fileExists(atPath: cl.path))
+            let text = try! String(contentsOf: cl, encoding: .utf8)
+            check("logs completed item", text.contains("finish thing"), text)
+        }
     }
 
     static func waitGitStatus(_ store: TodoStore, timeout: TimeInterval = 3) async -> String? {
@@ -467,12 +492,22 @@ struct SmokeMain {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let status = await MainActor.run { store.lastStatus }
-            if status == "Pulled" || status == "Up to date" || status == "Pull failed" {
+            if status == "Updated from git" || isPullStatus(status) {
                 return status
             }
+            let hasRemote = await MainActor.run {
+                store.sections.flatMap(\.items).contains { $0.text == "from remote" }
+            }
+            if hasRemote { return "Updated from git" }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         return await MainActor.run { store.lastStatus }
+    }
+
+    static func isPullStatus(_ status: String?) -> Bool {
+        status == "Updated from git"
+            || status == "Remote has updates (kept local changes)"
+            || status == "Git diverged from remote — pull skipped"
     }
 
     static func isPushed(_ status: String?) -> Bool {

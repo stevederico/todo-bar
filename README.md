@@ -13,19 +13,20 @@
 ## What it does
 
 - Tabs for multiple files (default: `~/todos.md`, then `~/Documents/todos.md`)
-- **+** adds another `.md` (e.g. `books.md`, `deals.md`, `marketing/todo.md`)
+- **+** tab after the last list takes a path to another `.md` (e.g. `~/books.md`, `~/marketing/todo.md`)
 - Right-click tab → Rename / Reveal / Remove
 - Shows open items (`- task`) grouped by `##` section; completed stay hidden until **Show Completed**
-- **+** — new to-do is **prepended at the top** of the first section (pre-header `To-Dos` when present)
-- **Click** circle — mark complete (`- [x]`), move that line to the **end of the file**; **Show Completed** to see / reopen
-- Each add/edit/complete/delete **commits**, then **pushes** if the file's repo has an upstream
-- On launch, tab switch, panel open, and **Refresh** — **pulls** from upstream (`--rebase --autostash`) then reloads
-- **Click** text — expand; **double-click** (or right-click → Edit) to rewrite
-- **Right-click** — Mark Complete / Reopen, Move, Edit, Copy, **Delete**
-- **Reorder** — ↑↓ on open items (or context menu)
+- **+** / `n` — new to-do is prepended at the top of the first section (pre-header `To-Dos` when present)
+- Click the square — mark complete (`- [x]`), move that line to the **end of the file**; **Show Completed** to see / reopen
+- Click text to expand; double-click (or right-click → Edit) to rewrite
+- Right-click — Mark Complete / Reopen, Edit, Copy, **Delete**
+- Drag open items to reorder (when not filtering)
 - Live-reloads when the active file changes; tabs persist in UserDefaults
-- **Open Window** — pop the panel into a normal resizable window (same tabs + data)
-- Footer shows when the active file was last updated on disk
+- **Open Window** (`w`) — pop the panel into a normal resizable window (same tabs + data)
+
+Opening or closing the panel or window syncs that file's git remote (fetch; fast-forward if behind; push when ahead). Edits commit and push. Fetch failures stay silent. Diverged branches and overlapping uncommitted files are left alone. **Refresh** (or `r`) forces a check.
+
+Completing an item always appends it to a sibling `CHANGELOG.md` (creates the file if needed).
 
 <p align="center">
   <img src="docs/screenshots/panel-books.png" alt="todo-bar books tab with sample reading list" width="400" />
@@ -58,3 +59,7 @@ Screenshots use fake lists in `docs/demo/` (not anyone's real todos). Regenerate
 ```bash
 bash scripts/render-screenshots.sh
 ```
+
+## Linux / Omarchy
+
+The [todo-omarchy](https://github.com/stevederico/todo-omarchy) plugin is the Linux port of this app for the Omarchy bar and tiled window.

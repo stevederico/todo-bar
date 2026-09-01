@@ -27,6 +27,7 @@ struct SmokeMain {
         testInsertIndexHelpers()
         await testStoreIntegration()
         await testStoreGitPush()
+        await testStoreGitPull()
 
         if failed == 0 {
             print("\nSMOKE PASS")
@@ -382,11 +383,91 @@ struct SmokeMain {
         check("remote has commit", log.1.trimmingCharacters(in: .whitespacesAndNewlines) == "Add PUSHED ITEM", log.1)
     }
 
+    static func testStoreGitPull() async {
+        print("== store git pull ==")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("todo-bar-smoke-pull-\(UUID().uuidString)", isDirectory: true)
+        let remoteWork = tmp.appendingPathComponent("remote-work", isDirectory: true)
+        let local = tmp.appendingPathComponent("local", isDirectory: true)
+        let bare = tmp.appendingPathComponent("remote.git")
+        try! FileManager.default.createDirectory(at: remoteWork, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        func git(_ dir: URL, _ args: [String], capture: Bool = false) -> (Int32, String) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.currentDirectoryURL = dir
+            let out = Pipe()
+            p.standardOutput = capture ? out : FileHandle.nullDevice
+            p.standardError = capture ? out : FileHandle.nullDevice
+            try! p.run()
+            p.waitUntilExit()
+            let text = capture
+                ? (String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+                : ""
+            return (p.terminationStatus, text)
+        }
+
+        try! "# To-Do\n\n- seed\n".write(
+            to: remoteWork.appendingPathComponent("todos.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        _ = git(remoteWork, ["init", "-b", "master"])
+        _ = git(remoteWork, ["config", "user.email", "smoke@todo-bar.test"])
+        _ = git(remoteWork, ["config", "user.name", "Smoke"])
+        _ = git(remoteWork, ["add", "."])
+        _ = git(remoteWork, ["commit", "-m", "init"])
+        _ = git(tmp, ["init", "--bare", "-b", "master", bare.path])
+        _ = git(remoteWork, ["remote", "add", "origin", bare.path])
+        let pushed = git(remoteWork, ["push", "-u", "origin", "master"], capture: true)
+        check("bare ready", pushed.0 == 0, pushed.1)
+
+        let clone = git(tmp, ["clone", bare.path, local.path], capture: true)
+        check("cloned", clone.0 == 0, clone.1)
+        _ = git(local, ["config", "user.email", "smoke@todo-bar.test"])
+        _ = git(local, ["config", "user.name", "Smoke"])
+
+        // Advance remote after clone so local is behind
+        let remoteMd = remoteWork.appendingPathComponent("todos.md")
+        try! "# To-Do\n\n- from remote\n- seed\n".write(to: remoteMd, atomically: true, encoding: .utf8)
+        _ = git(remoteWork, ["add", "."])
+        _ = git(remoteWork, ["commit", "-m", "remote update"])
+        _ = git(remoteWork, ["push"], capture: true)
+
+        let localMd = local.appendingPathComponent("todos.md")
+        let before = try! String(contentsOf: localMd, encoding: .utf8)
+        check("local still seed-only", !before.contains("from remote"), before)
+
+        let store = await MainActor.run { TodoStore(filePath: localMd) }
+        let pulled = await waitPullStatus(store, timeout: 25)
+        check("status pulled", pulled == "Pulled", pulled ?? "nil")
+        check("no pull error", await MainActor.run { store.lastError == nil }, await MainActor.run { store.lastError ?? "" })
+        let after = try! String(contentsOf: localMd, encoding: .utf8)
+        check("disk has remote item", after.contains("from remote"), after)
+        check("ui shows remote item", await MainActor.run {
+            store.sections.flatMap(\.items).contains { $0.text == "from remote" }
+        })
+    }
+
     static func waitGitStatus(_ store: TodoStore, timeout: TimeInterval = 3) async -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let status = await MainActor.run { store.lastStatus }
             if isCommittedOnly(status) || isPushed(status) || isNotCommitted(status) {
+                return status
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return await MainActor.run { store.lastStatus }
+    }
+
+    static func waitPullStatus(_ store: TodoStore, timeout: TimeInterval = 3) async -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let status = await MainActor.run { store.lastStatus }
+            if status == "Pulled" || status == "Up to date" || status == "Pull failed" {
                 return status
             }
             try? await Task.sleep(nanoseconds: 50_000_000)

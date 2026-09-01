@@ -66,6 +66,7 @@ struct ContentView: View {
             footer
         }
         .frame(width: 460, height: 580)
+        .onAppear { store.syncFromRemote() }
         .sheet(item: $renameID) { id in
             RenameSheet(
                 title: renameText,
@@ -281,7 +282,7 @@ struct ContentView: View {
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
 
             HStack(spacing: 8) {
-                Button("Refresh") { store.reload() }
+                Button("Refresh") { store.syncFromRemote() }
                 Button("Open File") { store.openInEditor() }
                 Button("Reveal") { store.revealInFinder() }
                 if completedCount > 0 {
@@ -302,6 +303,11 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(12)
     }

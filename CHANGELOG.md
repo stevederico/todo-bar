@@ -1,6 +1,12 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.6.0
+
+  Pull on open
+  Show version footer
+  Add pull smoke test
+
 0.5.0
 
   Push after commit

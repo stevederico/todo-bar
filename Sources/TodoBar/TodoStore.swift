@@ -9,6 +9,13 @@ private final class GitOutputBox: @unchecked Sendable {
     var stderr = Data()
 }
 
+private enum PullOutcome: Sendable {
+    case skipped
+    case upToDate
+    case pulled
+    case failed(String)
+}
+
 @MainActor
 final class TodoStore: ObservableObject {
     @Published private(set) var sections: [TodoSection] = []
@@ -26,6 +33,7 @@ final class TodoStore: ObservableObject {
     private var reloadWork: DispatchWorkItem?
     private var suppressWatchUntil: Date = .distantPast
     private var statusToken = 0
+    private var pullToken = 0
 
     nonisolated static func defaultTodosURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -45,6 +53,7 @@ final class TodoStore: ObservableObject {
         self.filePath = filePath.resolvingSymlinksInPath()
         reload()
         startWatching()
+        syncFromRemote()
     }
 
     deinit {
@@ -70,6 +79,22 @@ final class TodoStore: ObservableObject {
         lastStatus = nil
         reload()
         startWatching()
+        syncFromRemote()
+    }
+
+    /// Pull from upstream (if any), then reload the file. Used on open, tab switch, and Refresh.
+    func syncFromRemote() {
+        pullToken += 1
+        let token = pullToken
+        let path = filePath
+        // Don't clobber an in-flight mutation status ("Added", "Completed · pushed", …).
+        if lastStatus == nil || lastStatus == "Up to date" || lastStatus == "Pulled" || lastStatus == "Pull failed" || lastStatus == "Syncing…" {
+            lastStatus = "Syncing…"
+        }
+        Task.detached(priority: .utility) { [weak self] in
+            let result = Self.gitPullSync(file: path)
+            await self?.finishPull(token: token, result: result)
+        }
     }
 
     // MARK: - Load
@@ -283,6 +308,38 @@ final class TodoStore: ObservableObject {
         }
     }
 
+    private func finishPull(token: Int, result: PullOutcome) {
+        guard token == pullToken else { return }
+        let canReplaceStatus = lastStatus == nil
+            || lastStatus == "Syncing…"
+            || lastStatus == "Up to date"
+            || lastStatus == "Pulled"
+            || lastStatus == "Pull failed"
+        switch result {
+        case .skipped:
+            if lastStatus == "Syncing…" {
+                lastStatus = nil
+            }
+        case .upToDate:
+            if canReplaceStatus {
+                lastStatus = "Up to date"
+            }
+        case .pulled:
+            suppressWatch(for: 1.5)
+            reload()
+            if canReplaceStatus {
+                lastStatus = "Pulled"
+            }
+            lastError = nil
+        case .failed(let message):
+            lastError = message
+            print("todo-bar git pull: \(message)")
+            if canReplaceStatus {
+                lastStatus = "Pull failed"
+            }
+        }
+    }
+
     // MARK: - Changelog
 
     @discardableResult
@@ -410,6 +467,39 @@ final class TodoStore: ObservableObject {
             return GitSyncResult(pushed: true, pushError: nil)
         } catch {
             return GitSyncResult(pushed: false, pushError: error.localizedDescription)
+        }
+    }
+
+    /// Pull with rebase + autostash when upstream exists. Never throws — failures are returned.
+    nonisolated private static func gitPullSync(file: URL) -> PullOutcome {
+        todoBarGitLock.lock()
+        defer { todoBarGitLock.unlock() }
+
+        let dir = file.deletingLastPathComponent().path
+        let rootOut: String
+        do {
+            rootOut = try runGit(arguments: ["-C", dir, "rev-parse", "--show-toplevel"])
+        } catch {
+            return .skipped
+        }
+        let rootPath = URL(fileURLWithPath: rootOut.trimmingCharacters(in: .whitespacesAndNewlines))
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        guard !rootPath.isEmpty else { return .skipped }
+        guard hasUpstream(rootPath: rootPath) else { return .skipped }
+
+        do {
+            let out = try runGit(
+                arguments: ["-C", rootPath, "pull", "--rebase", "--autostash"],
+                timeoutSeconds: 20
+            )
+            let combined = out.lowercased()
+            if combined.contains("already up to date") {
+                return .upToDate
+            }
+            return .pulled
+        } catch {
+            return .failed(error.localizedDescription)
         }
     }
 

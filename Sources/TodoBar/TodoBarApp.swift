@@ -14,6 +14,7 @@ struct TodoBarApp: App {
                 compact: true,
                 onOpenWindow: { appDelegate.openTodoWindow() }
             )
+            .frame(width: 460, height: 560)
             .onAppear { appDelegate.attach(model: model) }
         } label: {
             Image(systemName: "checklist")

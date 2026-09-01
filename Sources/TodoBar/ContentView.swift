@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var renameID: UUID?
     @State private var renameText = ""
     @State private var newTodoText = ""
-    @State private var showAddField = true
+    @State private var showAddField = false
     @State private var showAddList = false
     @State private var addListPath = ""
     @State private var showFilter = false
@@ -48,6 +48,19 @@ struct ContentView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
     }
 
+    private let compactWidth: CGFloat = 460
+    private let compactHeight: CGFloat = 560
+
+    private var compactListHeight: CGFloat {
+        guard compact else { return 320 }
+        var used: CGFloat = 44 + 2 + 50 // top bar, dividers, footer
+        if showAddField { used += 48 }
+        if showAddList { used += 48 }
+        if showFilter { used += 44 }
+        if store.lastError != nil || store.lastStatus != nil { used += 28 }
+        return max(180, compactHeight - used)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -69,6 +82,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    .lineLimit(2)
             } else if let status = store.lastStatus {
                 Text(status)
                     .font(.caption)
@@ -76,17 +90,18 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    .lineLimit(1)
             }
             list
-                .frame(maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity)
+                .frame(height: compact ? compactListHeight : nil)
+                .frame(maxHeight: compact ? compactListHeight : .infinity)
             Divider()
             footer
         }
-        .frame(
-            width: compact ? 460 : nil,
-            height: compact ? 620 : nil
-        )
+        .frame(width: compact ? compactWidth : nil, height: compact ? compactHeight : nil)
         .frame(minWidth: 400, minHeight: 480)
+        .clipped()
         .background(keyboardShortcuts)
         .onAppear { store.syncFromRemote() }
         .sheet(item: $renameID) { id in
@@ -125,6 +140,8 @@ struct ContentView: View {
                     addListTab
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
 
             Button {
                 withAnimation(.easeOut(duration: 0.15)) {
@@ -154,6 +171,8 @@ struct ContentView: View {
                     )
             }
             .buttonStyle(.plain)
+            .fixedSize()
+            .layoutPriority(1)
             .help(showAddField ? "Hide New To-Do (n)" : "Add To-Do (n)")
         }
         .padding(.horizontal, 12)
@@ -374,7 +393,7 @@ struct ContentView: View {
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 FooterIconButton(
                     systemName: "magnifyingglass",
                     selected: showFilter || isFiltering,
@@ -409,29 +428,24 @@ struct ContentView: View {
                         showCompleted.toggle()
                     }
                 }
-                Spacer()
+                if compact {
+                    FooterIconButton(systemName: "power", help: "Quit (q)") {
+                        NSApp.terminate(nil)
+                    }
+                } else if let onCloseWindow {
+                    FooterIconButton(systemName: "xmark.circle", help: "Close window") {
+                        onCloseWindow()
+                    }
+                }
+                Spacer(minLength: 4)
                 Text("v\(appVersion)")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-            }
-            .frame(height: 28)
-
-            HStack {
-                if compact {
-                    Button("Quit") { NSApp.terminate(nil) }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .keyboardShortcut("q")
-                } else if let onCloseWindow {
-                    Button("Close Window") { onCloseWindow() }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .keyboardShortcut("w", modifiers: [.command])
-                }
-                Spacer()
+                    .lineLimit(1)
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private func focusAdd() {
@@ -474,8 +488,8 @@ private struct FooterIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: 28, height: 28)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 26, height: 26)
                 .background(
                     selected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06),
                     in: RoundedRectangle(cornerRadius: 6)

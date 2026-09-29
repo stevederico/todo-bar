@@ -1,6 +1,11 @@
 - polish empty-state copy
 - keyboard shortcut for new to-do
 
+0.8.0
+
+  Fix panel layout
+  Fix README link
+
 0.7.0
 
   Match todo-omarchy parity

@@ -62,4 +62,4 @@ bash scripts/render-screenshots.sh
 
 ## Linux / Omarchy
 
-The [todo-omarchy](https://github.com/stevederico/todo-omarchy) plugin is the Linux port of this app for the Omarchy bar and tiled window.
+The [dottie-todos-omarchy](https://github.com/stevederico/dottie-todos-omarchy) plugin is the Linux port of this app for the Omarchy bar and tiled window.
